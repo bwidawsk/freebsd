@@ -102,6 +102,7 @@ struct acpi_softc {
 	    int		flags;
 	    int		saved_flags;
     } acpi_repressed_states;
+    int			acpi_supports_s0ix;	/* Platform prefers s0ix */
 
     vm_offset_t		acpi_wakeaddr;
     vm_paddr_t		acpi_wakephys;
