@@ -602,7 +602,7 @@ acpi_attach(device_t dev)
 	&sc->acpi_handle_reboot, 0, "Use ACPI Reset Register to reboot");
     SYSCTL_ADD_INT(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "supports_s0ix", CTLFLAG_RD,
-	 &sc->acpi_supports_s0ix, 0, "BIOS/Firmware supports s0ix");
+	 &sc->acpi_supports_s0ix, 0, "Bitfield for BIOS/Firmware s0ix preference");
 
     /*
      * Default to 1 second before sleeping to give some machines time to
@@ -636,7 +636,7 @@ acpi_attach(device_t dev)
 	    acpi_sleep_states[state] = TRUE;
 
     if (AcpiGbl_FADT.Flags & ACPI_FADT_LOW_POWER_S0)
-	sc->acpi_supports_s0ix = 1;
+	sc->acpi_supports_s0ix = PREFER_S0IX_FADT21;
 
     /*
      * Dispatch the default sleep state to devices.  The lid switch is set
