@@ -102,6 +102,8 @@ struct acpi_softc {
 	    int		flags;
 	    int		saved_flags;
     } acpi_repressed_states;
+#define PREFER_S0IX_FADT21 (1 << 0)
+#define PREFER_S0IX_LPIT   (1 << 1)
     int			acpi_supports_s0ix;	/* Platform prefers s0ix */
 
     vm_offset_t		acpi_wakeaddr;
