@@ -3102,6 +3102,18 @@ device_set_unit(device_t dev, int unit)
 	return (0);
 }
 
+void
+device_set_idle_suspend(device_t dev)
+{
+    dev->flags |= DF_SUSPEND_AT_IDLE;
+}
+
+int
+device_get_idle_suspend(device_t dev)
+{
+    return ((dev->flags & DF_SUSPEND_AT_IDLE) != 0);
+}
+
 /*======================================*/
 /*
  * Some useful method implementations to make life easier for bus drivers.

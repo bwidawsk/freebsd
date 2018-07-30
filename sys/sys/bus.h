@@ -95,6 +95,7 @@ struct u_device {
 #define	DF_QUIET_CHILDREN 0x200		/* Default to quiet for all my children */
 #define	DF_ATTACHED_ONCE 0x400		/* Has been attached at least once */
 #define	DF_NEEDNOMATCH	0x800		/* Has a pending NOMATCH event */
+#define DF_SUSPEND_AT_IDLE 0x1000	/* Suspend this device when idling */
 
 /**
  * @brief Device request structure used for ioctl's.
@@ -622,6 +623,8 @@ int	device_set_unit(device_t dev, int unit);	/* XXX DONT USE XXX */
 int	device_shutdown(device_t dev);
 void	device_unbusy(device_t dev);
 void	device_verbose(device_t dev);
+void	device_set_idle_suspend(device_t dev);
+int	device_get_idle_suspend(device_t dev);
 
 /*
  * Access functions for devclass.
