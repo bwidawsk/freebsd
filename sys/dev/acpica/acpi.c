@@ -55,6 +55,7 @@ __FBSDID("$FreeBSD$");
 #include <machine/clock.h>
 #include <machine/pci_cfgreg.h>
 #include <machine/intr_machdep.h>
+#include <x86/x86_var.h>
 #endif
 #include <machine/resource.h>
 #include <machine/bus.h>
@@ -2836,11 +2837,40 @@ select_sleep_type(struct acpi_softc *sc, int state)
 	          "Requested S%d, but using S0IDLE instead\n", state);
     return SUSPEND_TO_IDLE;
 }
+static int
+supports_s0ix(struct acpi_softc *sc)
+{
+    /*
+     * The cpu_mwait_usable is actually a superset of what's needed to enter
+     * s0ix. Only bit one is actually required - Intel SDM vol 2B MWAIT:
+     *
+     *          Support for MWAIT extensions for power management is indicated
+     *          by  CPUID.05H:ECX[bit 0] reporting 1."
+     *
+     *
+     * While it's technically possible to implement suspend to idle without
+     * having interrupts break out of MWAIT, it's not implemented yet.
+     *
+     *          Treat interrupts as break events even if masked (e.g., even if
+     *          EFLAGS.IF=0). May be set only if CPUID.05H:ECX[bit 1] = 1"
+     */
+    if (!cpu_mwait_usable())
+	return 0;
+
+    return sc->acpi_supports_s0ix >= (PREFER_S0IX_FADT21 |
+				      PREFER_S0IX_LPIT   |
+				      PREFER_S0IX_DSM);
+}
 #else
 static enum sleep_type
 select_sleep_type(struct acpi_softc *sc)
 {
     return AWAKE;
+}
+static int
+supports_s0ix(struct acpi_softc *sc)
+{
+    return 0;
 }
 #endif
 
@@ -2854,11 +2884,17 @@ sanitize_sstate(struct acpi_softc *sc, enum sleep_type stype, int state,
 
     if (state < ACPI_STATE_S1 || state > ACPI_S_STATES_MAX)
 	return acpi_err ? (AE_BAD_PARAMETER) : (EINVAL);
-    if (!acpi_sleep_states[state]) {
-	device_printf(sc->acpi_dev,
-	    "Sleep state S%d not supported by BIOS\n", state);
+    if (state == ACPI_STATE_S3) {
+	if (!acpi_sleep_states[ACPI_STATE_S3] && supports_s0ix(sc)) {
+	    printf("Platform supports Low Power Idle instead of S3\n");
+	    return acpi_err ? (AE_SUPPORT) : (EOPNOTSUPP);
+	}
+	if (!acpi_sleep_states[ACPI_STATE_S3]) {
+	    printf("Consider using S0IDLE instead of S3\n");
+	    return acpi_err ? (AE_SUPPORT) : (EOPNOTSUPP);
+	}
+    } else if (!acpi_sleep_states[state])
 	return acpi_err ? (AE_SUPPORT) : (EOPNOTSUPP);
-    }
 
 out:
     return acpi_err ? (AE_OK) : (0);
