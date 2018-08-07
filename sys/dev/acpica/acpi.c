@@ -2973,7 +2973,6 @@ enum acpi_sleep_state {
 static ACPI_STATUS
 acpi_EnterSleepState(struct acpi_softc *sc, int state)
 {
-    register_t intr;
     ACPI_STATUS status;
     ACPI_EVENT_STATUS power_button_status;
     enum acpi_sleep_state slp_state;
@@ -3063,8 +3062,8 @@ acpi_EnterSleepState(struct acpi_softc *sc, int state)
 	DELAY(sc->acpi_sleep_delay * 1000000);
 
     suspendclock();
-    intr = intr_disable();
     if (state != ACPI_STATE_S1) {
+	register_t intr = intr_disable();
 	sleep_result = acpi_sleep_machdep(sc, state);
 	acpi_wakeup_machdep(sc, state, sleep_result, 0);
 
@@ -3117,6 +3116,7 @@ acpi_EnterSleepState(struct acpi_softc *sc, int state)
 	if (state == ACPI_STATE_S4)
 	    AcpiEnable();
     } else {
+	register_t intr = intr_disable();
 	status = AcpiEnterSleepState(state);
 	intr_restore(intr);
 	AcpiLeaveSleepStatePrep(state);
