@@ -58,7 +58,17 @@ CODE {
 	    return 0;
 	}
 
+	static int null_post_suspend(device_t dev)
+	{
+	    return 0;
+	}
+
 	static int null_resume(device_t dev)
+	{
+	    return 0;
+	}
+
+	static int null_post_resume(device_t dev)
 	{
 	    return 0;
 	}
@@ -292,6 +302,38 @@ METHOD int suspend {
 } DEFAULT null_suspend;
 
 /**
+ * @brief This is called by the power-management subsystem *after* suspending
+ * other devices.
+ *
+ * This gives special power management devices a chance to run their preparation
+ * routines when needed just before idle. An example of such a case is certain
+ * platforms contain a System Power Management Controller, which has hooks to
+ * enable deeper sleep states, but only after the rest of the system has gone
+ * down.
+ *
+ * Generally only one device in the system should actively have an
+ * implementation of this routine.
+ *
+ * To include this method in a device driver, use a line like this in the
+ * driver's method list:
+ *
+ * @code
+ * 	DEVMETHOD(device_post_suspend, foo_post_suspend)
+ * @endcode
+ *
+ * @param dev		the device orchestrating deeper suspend
+ *
+ * @retval 0		success
+ * @retval non-zero	an error occurred preventing deeper suspend
+ *
+ * @see DEVICE_POST_RESUME()
+ */
+
+METHOD int post_suspend {
+	device_t dev;
+} DEFAULT null_post_suspend;
+
+/**
  * @brief This is called when the system resumes after a suspend.
  *
  * To include this method in a device driver, use a line like this
@@ -312,6 +354,28 @@ METHOD int suspend {
 METHOD int resume {
 	device_t dev;
 } DEFAULT null_resume;
+
+/**
+ * @brief This is called *after* a system resumes from suspend, but *before*
+ * resuming devices.
+ *
+ * To include this method in a device driver, use a line like this
+ * in the driver's method list:
+ *
+ * @code
+ * 	DEVMETHOD(device_post_resume, foo_post_resume)
+ * @endcode
+ *
+ * @param dev		the device orchestrating deeper suspend
+ *
+ * @retval 0		success
+ * @retval non-zero	an error occurred preventing deeper suspend
+ *
+ * @see DEVICE_POST_SUSPEND()
+ */
+METHOD int post_resume {
+	device_t dev;
+} DEFAULT null_post_resume;
 
 /**
  * @brief This is called when the driver is asked to quiesce itself.
