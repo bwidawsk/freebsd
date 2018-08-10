@@ -3047,8 +3047,9 @@ enum acpi_sleep_state {
     ACPI_SS_NONE	=	0<<0,
     ACPI_SS_GPE_SET	=	1<<0,
     ACPI_SS_DEV_SUSPEND	=	1<<1,
-    ACPI_SS_SLP_PREP	=	1<<2,
-    ACPI_SS_SLEPT	=	1<<3,
+    ACPI_SS_DEV_POST_SUSPEND=	1<<2,
+    ACPI_SS_SLP_PREP	=	1<<3,
+    ACPI_SS_SLEPT	=	1<<4,
 };
 
 static void
@@ -3224,6 +3225,13 @@ acpi_EnterSleepState(struct acpi_softc *sc, enum sleep_type stype)
     }
     slp_state |= ACPI_SS_DEV_SUSPEND;
 
+    if (sc->acpi_pm_device) {
+	if (DEVICE_POST_SUSPEND(sc->acpi_pm_device) == 0)
+	    slp_state = ACPI_SS_DEV_POST_SUSPEND;
+	else
+	    device_printf(sc->acpi_dev, "post suspend failed, carrying on\n");
+    }
+
     if (stype != SUSPEND_TO_IDLE) {
 	status = AcpiEnterSleepStatePrep(state);
 	if (ACPI_FAILURE(status)) {
@@ -3278,6 +3286,12 @@ backout:
 	acpi_wake_prep_walk(state);
 	sc->acpi_sstate = AWAKE;
 	slp_state &= ~ACPI_SS_GPE_SET;
+    }
+
+    if (slp_state & ACPI_SS_DEV_POST_SUSPEND) {
+	MPASS(sc->acpi_pm_device);
+	DEVICE_POST_RESUME(sc->acpi_pm_device);
+	slp_state &= ~ACPI_SS_DEV_POST_SUSPEND;
     }
 
     if (slp_state & ACPI_SS_DEV_SUSPEND) {
