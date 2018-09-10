@@ -55,6 +55,7 @@ __FBSDID("$FreeBSD$");
 #include <machine/clock.h>
 #include <machine/pci_cfgreg.h>
 #include <machine/intr_machdep.h>
+#include <machine/specialreg.h>
 #include <x86/x86_var.h>
 #endif
 #include <machine/resource.h>
@@ -3124,6 +3125,19 @@ acpi_PowerTransitionIsEnabled()
     return (sc->acpi_repressed_states.flags & (1 << ACPI_POWER_DISABLED)) == 0;
 }
 
+/*
+ * s0ix isn't exactly a sleep state since hardware handles a lot of the
+ * processor context save and restore. We just need to make sure that we are
+ * able to be woken up.
+ */
+static void
+__do_s0ix(struct acpi_softc *sc)
+{
+    /* HACK: need to actually find the max cstate for the CPU */
+    cpu_mwait(MWAIT_INTRBREAK, MWAIT_C3);
+
+}
+
 static void
 __do_idle(struct acpi_softc *sc)
 {
@@ -3134,7 +3148,18 @@ __do_idle(struct acpi_softc *sc)
     /* XXX: Is this actually required? */
     intr_enable_src(acpi_GetSciInterrupt());
     acpi_state_transition_disable(sc);
-    cpu_idle(0);
+
+   /*
+    * S0ix will only work with mwait, so make sure that we don't just use idle
+    * which could have been overridden in various ways. Also, the monitor
+    * hardware doesn't need to be setup for a wakeup, which the generic idle
+    * function will (might) do.
+    */
+    if (supports_s0ix(sc))
+	__do_s0ix(sc);
+    else
+	cpu_idle(0);
+
     acpi_state_transition_enable(sc);
     intr_resume(false);
     intr_restore(intr);
