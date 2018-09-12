@@ -2984,23 +2984,24 @@ __do_sleep(struct acpi_softc *sc, int state, enum acpi_sleep_state *pass)
     int sleep_result;
     register_t intr;
 
+    MPASS(state == ACPI_STATE_S3 || state == ACPI_STATE_S4);
+
     intr = intr_disable();
 
     sleep_result = acpi_sleep_machdep(sc, state);
     acpi_wakeup_machdep(sc, state, sleep_result, 0);
 
-    /*
-     * XXX According to ACPI specification SCI_EN bit should be restored by ACPI
-     * platform (BIOS, firmware) to its pre-sleep state. Unfortunately some
-     * BIOSes fail to do that and that leads to unexpected and serious
-     * consequences during wake up like a system getting stuck in SMI handlers.
-     * This hack is picked up from Linux, which claims that it follows Windows
-     * behavior.
-     */
-    if (sleep_result == 1 && state != ACPI_STATE_S4)
+    if (sleep_result == 1 && state == ACPI_STATE_S3) {
+	/*
+	 * XXX According to ACPI specification SCI_EN bit should be restored by
+	 * ACPI platform (BIOS, firmware) to its pre-sleep state. Unfortunately
+	 * some BIOSes fail to do that and that leads to unexpected and serious
+	 * consequences during wake up like a system getting stuck in SMI
+	 * handlers.  This hack is picked up from Linux, which claims that it
+	 * follows Windows behavior.
+	 */
 	AcpiWriteBitRegister(ACPI_BITREG_SCI_ENABLE, ACPI_ENABLE_EVENT);
 
-    if (sleep_result == 1 && state == ACPI_STATE_S3) {
 	/*
 	 * Prevent mis-interpretation of the wakeup by power button as a request
 	 * for power off. Ideally we should post an appropriate wakeup event,
