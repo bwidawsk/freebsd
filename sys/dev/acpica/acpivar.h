@@ -56,7 +56,6 @@ struct acpi_softc {
 
     int			acpi_enabled;
     int			acpi_sstate;
-    int			acpi_sleep_disabled;
     int			acpi_resources_reserved;
 
     struct sysctl_ctx_list acpi_sysctl_ctx;
@@ -73,6 +72,10 @@ struct acpi_softc {
     int			acpi_do_disable;
     int			acpi_verbose;
     int			acpi_handle_reboot;
+#define ACPI_SLEEP_DISABLED (0) /* S3, S4 */
+    struct {
+	    int		flags;
+    } acpi_repressed_states;
 
     vm_offset_t		acpi_wakeaddr;
     vm_paddr_t		acpi_wakephys;
