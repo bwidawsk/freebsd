@@ -664,7 +664,7 @@ acpi_attach(device_t dev)
     /* Flag our initial states. */
     sc->acpi_enabled = TRUE;
     sc->acpi_sstate = ACPI_STATE_S0;
-    sc->acpi_sleep_disabled = TRUE;
+    sc->acpi_repressed_states.flags |= 1 << ACPI_SLEEP_DISABLED;
 
     /* Create the control device */
     sc->acpi_dev_t = make_dev(&acpi_cdevsw, 0, UID_ROOT, GID_OPERATOR, 0664,
@@ -2823,7 +2823,7 @@ acpi_ReqSleepState(struct acpi_softc *sc, int state)
     }
 
     /* Wait until sleep is enabled. */
-    while (sc->acpi_sleep_disabled) {
+    while (sc->acpi_repressed_states.flags & (1 <<ACPI_SLEEP_DISABLED)) {
 	AcpiOsSleep(1000);
     }
 
@@ -2951,24 +2951,20 @@ acpi_sleep_enable(void *arg)
 	return;
     }
 
-    sc->acpi_sleep_disabled = FALSE;
+    atomic_clear_int(&sc->acpi_repressed_states.flags, ACPI_SLEEP_DISABLED);
 }
 
 static ACPI_STATUS
 acpi_sleep_disable(struct acpi_softc *sc)
 {
-    ACPI_STATUS		status;
-
     /* Fail if the system is not fully up and running. */
     if (!AcpiGbl_SystemAwakeAndRunning)
 	return (AE_ERROR);
 
-    ACPI_LOCK(acpi);
-    status = sc->acpi_sleep_disabled ? AE_ERROR : AE_OK;
-    sc->acpi_sleep_disabled = TRUE;
-    ACPI_UNLOCK(acpi);
+    if (atomic_testandset_int(&sc->acpi_repressed_states.flags, ACPI_SLEEP_DISABLED))
+	return AE_ERROR;
 
-    return (status);
+    return AE_OK;
 }
 
 enum acpi_sleep_state {
