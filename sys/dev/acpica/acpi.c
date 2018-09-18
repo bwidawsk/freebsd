@@ -54,6 +54,7 @@ __FBSDID("$FreeBSD$");
 #if defined(__i386__) || defined(__amd64__)
 #include <machine/clock.h>
 #include <machine/pci_cfgreg.h>
+#include <machine/intr_machdep.h>
 #endif
 #include <machine/resource.h>
 #include <machine/bus.h>
@@ -173,6 +174,7 @@ static int	acpi_sname2sstate(const char *sname);
 static const char *acpi_sstate2sname(int sstate);
 static int	acpi_supported_sleep_state_sysctl(SYSCTL_HANDLER_ARGS);
 static int	acpi_sleep_state_sysctl(SYSCTL_HANDLER_ARGS);
+static int	acpi_suspend_state_sysctl(SYSCTL_HANDLER_ARGS);
 static int	acpi_debug_objects_sysctl(SYSCTL_HANDLER_ARGS);
 static int	acpi_pm_func(u_long cmd, void *arg, ...);
 static int	acpi_child_location_str_method(device_t acdev, device_t child,
@@ -576,7 +578,7 @@ acpi_attach(device_t dev)
 	&sc->acpi_standby_sx, 0, acpi_sleep_state_sysctl, "A", "");
     SYSCTL_ADD_PROC(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "suspend_state", CTLTYPE_STRING | CTLFLAG_RW,
-	&sc->acpi_suspend_sx, 0, acpi_sleep_state_sysctl, "A", "");
+	&sc->acpi_suspend_sx, 0, acpi_suspend_state_sysctl, "A", "");
     SYSCTL_ADD_INT(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "sleep_delay", CTLFLAG_RW, &sc->acpi_sleep_delay, 0,
 	"sleep delay in seconds");
@@ -2799,7 +2801,7 @@ sanitize_sstate(struct acpi_softc *sc, int state, bool acpi_err)
 {
     if (state < ACPI_STATE_S1 || state > ACPI_S_STATES_MAX)
 	return acpi_err ? (AE_BAD_PARAMETER) : (EINVAL);
-    if (!acpi_sleep_states[state]) {
+    if (!acpi_sleep_states[state] && !(state == ACPI_STATE_S3 && sc->acpi_s0idle)) {
 	device_printf(sc->acpi_dev,
 	    "Sleep state S%d not supported by BIOS\n", state);
 	return acpi_err ? (AE_SUPPORT) : (EOPNOTSUPP);
@@ -2881,7 +2883,10 @@ acpi_ReqSleepState(struct acpi_softc *sc, int state)
 
     return (0);
 #else
-    /* This platform does not support acpi suspend/resume. */
+    /*
+     * This platform does not support acpi suspend/resume.
+     * TODO: Support s2idle here since it's platform agnostic.
+     */
     return (EOPNOTSUPP);
 #endif
 }
@@ -2945,7 +2950,10 @@ acpi_AckSleepState(struct apm_clone_data *clone, int error)
     }
     return (ret);
 #else
-    /* This platform does not support acpi suspend/resume. */
+    /*
+     * This platform does not support acpi suspend/resume.
+     * TODO: Support s2idle here since it's platform agnostic.
+     */
     return (EOPNOTSUPP);
 #endif
 }
@@ -2963,7 +2971,7 @@ acpi_sleep_enable(void *arg)
 	return;
     }
 
-    atomic_clear_int(&sc->acpi_repressed_states.flags, ACPI_SLEEP_DISABLED);
+    atomic_clear_int(&sc->acpi_repressed_states.flags, 1 << ACPI_SLEEP_DISABLED);
 }
 
 static ACPI_STATUS
@@ -2986,6 +2994,61 @@ enum acpi_sleep_state {
     ACPI_SS_SLP_PREP,
     ACPI_SS_SLEPT,
 };
+
+static void
+acpi_state_transition_disable(struct acpi_softc *sc)
+{
+    int tmp;
+    tmp = atomic_swap_int(&sc->acpi_repressed_states.flags, ~0);
+
+    /* Disallow re-entrancy. Disabling sleep with this is allowed though. */
+    if (tmp & ~(1 << ACPI_SLEEP_DISABLED)) {
+	    device_printf(sc->acpi_dev, "Invalid saved power flags");
+	    tmp &= (1 << ACPI_SLEEP_DISABLED);
+    }
+    sc->acpi_repressed_states.saved_flags = tmp;
+}
+
+static void
+acpi_state_transition_enable(struct acpi_softc *sc)
+{
+#ifdef  INVARIANTS
+   int tmp;
+   tmp = atomic_swap_int(&sc->acpi_repressed_states.flags, sc->acpi_repressed_states.saved_flags);
+   MPASS(tmp == ~0);
+#else
+   atomic_store_int(&sc->acpi_repressed_states.flags, sc->sc->acpi_repressed_states.saved_flags);
+#endif
+
+   sc->acpi_repressed_states.saved_flags = 0;
+}
+
+BOOLEAN
+acpi_PowerTransitionIsEnabled()
+{
+    struct acpi_softc *sc = devclass_get_softc(devclass_find("acpi"), 0);
+    MPASS(sc != NULL);
+    return (sc->acpi_repressed_states.flags & (1 << ACPI_POWER_DISABLED)) == 0;
+}
+
+static void
+__do_idle(struct acpi_softc *sc)
+{
+    register_t intr;
+
+    intr = intr_disable();
+    intr_suspend();
+    /* XXX: Is this actually required? */
+    intr_enable_src(acpi_GetSciInterrupt());
+    acpi_state_transition_disable(sc);
+    cpu_idle(0);
+    acpi_state_transition_enable(sc);
+    intr_resume(false);
+    intr_restore(intr);
+
+    /* Bring back consoles ASAP */
+    cnresume();
+}
 
 static void
 __do_sleep(struct acpi_softc *sc, int state, enum acpi_sleep_state *pass)
@@ -3029,6 +3092,31 @@ __do_sleep(struct acpi_softc *sc, int state, enum acpi_sleep_state *pass)
     *pass = ACPI_SS_SLEPT;
 }
 
+enum sleep_type {
+    AWAKE,
+    SUSPEND,
+    SUSPEND_TO_IDLE,
+};
+
+static enum sleep_type
+select_sleep_type(struct acpi_softc *sc)
+{
+#if defined(__i386__) || defined(__amd64__)
+    /* The user explicitly requested */
+    if (sc->acpi_s0idle)
+	return SUSPEND_TO_IDLE;
+
+    /* The system supports S3, and that's probably best */
+    if (acpi_sleep_states[ACPI_STATE_S3])
+	return SUSPEND;
+
+    /* idle is the best we can do. */
+    return SUSPEND_TO_IDLE;
+#else
+    return AWAKE;
+#endif
+}
+
 /*
  * Enter the desired system sleep state.
  *
@@ -3039,6 +3127,7 @@ acpi_EnterSleepState(struct acpi_softc *sc, int state)
 {
     ACPI_STATUS status;
     enum acpi_sleep_state slp_state;
+    enum sleep_type stype;
     int err;
 
     ACPI_FUNCTION_TRACE_U32((char *)(uintptr_t)__func__, state);
@@ -3081,6 +3170,8 @@ acpi_EnterSleepState(struct acpi_softc *sc, int state)
      */
     mtx_lock(&Giant);
 
+    stype = select_sleep_type(sc);
+
     slp_state = ACPI_SS_NONE;
 
     sc->acpi_sstate = state;
@@ -3103,11 +3194,13 @@ acpi_EnterSleepState(struct acpi_softc *sc, int state)
     }
     slp_state = ACPI_SS_DEV_SUSPEND;
 
-    status = AcpiEnterSleepStatePrep(state);
-    if (ACPI_FAILURE(status)) {
-	device_printf(sc->acpi_dev, "AcpiEnterSleepStatePrep failed - %s\n",
-		      AcpiFormatException(status));
-	goto backout;
+    if (stype != SUSPEND_TO_IDLE) {
+	status = AcpiEnterSleepStatePrep(state);
+	if (ACPI_FAILURE(status)) {
+	    device_printf(sc->acpi_dev, "AcpiEnterSleepStatePrep failed - %s\n",
+		AcpiFormatException(status));
+	    goto backout;
+	}
     }
     slp_state = ACPI_SS_SLP_PREP;
 
@@ -3129,6 +3222,12 @@ acpi_EnterSleepState(struct acpi_softc *sc, int state)
 	}
 	break;
     case ACPI_STATE_S3:
+	if (stype == SUSPEND_TO_IDLE) {
+	    __do_idle(sc);
+	    break;
+	} else if (stype == AWAKE)
+	    goto backout;
+	/* fallthrough */
     case ACPI_STATE_S4:
 	__do_sleep(sc, state, &slp_state);
 	break;
@@ -3152,7 +3251,8 @@ backout:
     }
     if (slp_state >= ACPI_SS_DEV_SUSPEND)
 	DEVICE_RESUME(root_bus);
-    if (slp_state >= ACPI_SS_SLP_PREP)
+
+    if (stype != SUSPEND_TO_IDLE && (slp_state >= ACPI_SS_SLP_PREP))
 	AcpiLeaveSleepState(state);
     if (slp_state >= ACPI_SS_SLEPT) {
 #if defined(__i386__) || defined(__amd64__)
@@ -3494,6 +3594,9 @@ acpi_system_eventhandler_sleep(void *arg, int state)
     if (state == ACPI_STATE_UNKNOWN)
 	return;
 
+    if (!acpi_PowerTransitionIsEnabled())
+	return;
+
     /* Request that the system prepare to enter the given suspend state. */
     ret = acpi_ReqSleepState(sc, state);
     if (ret != 0)
@@ -3510,6 +3613,7 @@ acpi_system_eventhandler_wakeup(void *arg, int state)
     ACPI_FUNCTION_TRACE_U32((char *)(uintptr_t)__func__, state);
 
     /* Currently, nothing to do for wakeup. */
+    MPASS(acpi_PowerTransitionIsEnabled());
 
     return_VOID;
 }
@@ -3879,11 +3983,28 @@ acpi_supported_sleep_state_sysctl(SYSCTL_HANDLER_ARGS)
     for (state = ACPI_STATE_S1; state < ACPI_S_STATE_COUNT; state++)
 	if (acpi_sleep_states[state])
 	    sbuf_printf(&sb, "%s ", acpi_sstate2sname(state));
+#if defined(__i386__) || defined(__amd64__)
+    sbuf_printf(&sb, "S0IDLE ");
+#endif
+
     sbuf_trim(&sb);
     sbuf_finish(&sb);
     error = sysctl_handle_string(oidp, sbuf_data(&sb), sbuf_len(&sb), req);
     sbuf_delete(&sb);
     return (error);
+}
+
+static int
+update_state(struct sysctl_oid *oidp, int new_state, int old_state)
+{
+    if (new_state < ACPI_STATE_S1)
+	return (EINVAL);
+    if (new_state < ACPI_S_STATE_COUNT && !acpi_sleep_states[new_state])
+	return (EOPNOTSUPP);
+    if (new_state != old_state)
+	*(int *)oidp->oid_arg1 = new_state;
+
+    return (0);
 }
 
 static int
@@ -3897,14 +4018,44 @@ acpi_sleep_state_sysctl(SYSCTL_HANDLER_ARGS)
     error = sysctl_handle_string(oidp, sleep_state, sizeof(sleep_state), req);
     if (error == 0 && req->newptr != NULL) {
 	new_state = acpi_sname2sstate(sleep_state);
-	if (new_state < ACPI_STATE_S1)
-	    return (EINVAL);
-	if (new_state < ACPI_S_STATE_COUNT && !acpi_sleep_states[new_state])
-	    return (EOPNOTSUPP);
-	if (new_state != old_state)
-	    *(int *)oidp->oid_arg1 = new_state;
+	error = update_state(oidp, new_state, old_state);
     }
     return (error);
+}
+
+static int
+acpi_suspend_state_sysctl(SYSCTL_HANDLER_ARGS)
+{
+#if defined(__i386__) || defined(__amd64__)
+    struct acpi_softc *sc;
+    char sleep_state[10];
+    int error, new_state, old_state;
+
+    sc = __containerof(arg1, struct acpi_softc, acpi_suspend_sx);
+    old_state = *(int *)oidp->oid_arg1;
+
+    if (sc->acpi_s0idle)
+	strlcpy(sleep_state, "S0IDLE", 7);
+    else
+	strlcpy(sleep_state, acpi_sstate2sname(old_state), sizeof(sleep_state));
+
+    error = sysctl_handle_string(oidp, sleep_state, sizeof(sleep_state), req);
+    if (error || req->newptr == NULL)
+       return (error);
+
+    /* When "enabling" s0idle, leave don't touch the default */
+    if (!strncasecmp(sleep_state, "s0idle", 6) ||
+	!strncasecmp(sleep_state, "s2idle", 6)) {
+	sc->acpi_s0idle = true;
+	return (0);
+    } else {
+	new_state = acpi_sname2sstate(sleep_state);
+	sc->acpi_s0idle = false;
+	return update_state(oidp, new_state, old_state);
+    }
+#else
+    return acpi_sleep_state_sysctl(oidp, arg1, arg2, req);
+#endif
 }
 
 /* Inform devctl(4) when we receive a Notify. */
