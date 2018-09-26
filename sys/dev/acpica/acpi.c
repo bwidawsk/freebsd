@@ -96,6 +96,14 @@ struct acpi_interface {
 	int		num;
 };
 
+enum s2idle_enable {
+	POWER_BUTTON_S2I,
+	SLEEP_BUTTON_S2I,
+	LID_SWITCH_S2I,
+	STANDBY_S2I,
+	SUSPEND_S2I
+};
+
 static char *sysres_ids[] = { "PNP0C01", "PNP0C02", NULL };
 static char *pcilink_ids[] = { "PNP0C0F", NULL };
 
@@ -175,7 +183,6 @@ static int	acpi_sname2sstate(const char *sname);
 static const char *acpi_sstate2sname(int sstate);
 static int	acpi_supported_sleep_state_sysctl(SYSCTL_HANDLER_ARGS);
 static int	acpi_sleep_state_sysctl(SYSCTL_HANDLER_ARGS);
-static int	acpi_suspend_state_sysctl(SYSCTL_HANDLER_ARGS);
 static int	acpi_debug_objects_sysctl(SYSCTL_HANDLER_ARGS);
 static int	acpi_pm_func(u_long cmd, void *arg, ...);
 static int	acpi_child_location_str_method(device_t acdev, device_t child,
@@ -564,22 +571,22 @@ acpi_attach(device_t dev)
 	"List supported ACPI sleep states.");
     SYSCTL_ADD_PROC(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "power_button_state", CTLTYPE_STRING | CTLFLAG_RW,
-	&sc->acpi_power_button_sx, 0, acpi_sleep_state_sysctl, "A",
-	"Power button ACPI sleep state.");
+	&sc->acpi_power_button.sx, POWER_BUTTON_S2I, acpi_sleep_state_sysctl,
+	"A", "Power button ACPI sleep state.");
     SYSCTL_ADD_PROC(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "sleep_button_state", CTLTYPE_STRING | CTLFLAG_RW,
-	&sc->acpi_sleep_button_sx, 0, acpi_sleep_state_sysctl, "A",
-	"Sleep button ACPI sleep state.");
+	&sc->acpi_sleep_button.sx, SLEEP_BUTTON_S2I, acpi_sleep_state_sysctl,
+	"A", "Sleep button ACPI sleep state.");
     SYSCTL_ADD_PROC(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "lid_switch_state", CTLTYPE_STRING | CTLFLAG_RW,
-	&sc->acpi_lid_switch_sx, 0, acpi_sleep_state_sysctl, "A",
+	&sc->acpi_lid_switch.sx, LID_SWITCH_S2I, acpi_sleep_state_sysctl, "A",
 	"Lid ACPI sleep state. Set to S3 if you want to suspend your laptop when close the Lid.");
     SYSCTL_ADD_PROC(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "standby_state", CTLTYPE_STRING | CTLFLAG_RW,
-	&sc->acpi_standby_sx, 0, acpi_sleep_state_sysctl, "A", "");
+	&sc->acpi_standby.sx, STANDBY_S2I, acpi_sleep_state_sysctl, "A", "");
     SYSCTL_ADD_PROC(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "suspend_state", CTLTYPE_STRING | CTLFLAG_RW,
-	&sc->acpi_suspend_sx, 0, acpi_suspend_state_sysctl, "A", "");
+	&sc->acpi_suspend.sx, SUSPEND_S2I, acpi_sleep_state_sysctl, "A", "");
     SYSCTL_ADD_INT(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "sleep_delay", CTLFLAG_RW, &sc->acpi_sleep_delay, 0,
 	"sleep delay in seconds");
@@ -629,19 +636,19 @@ acpi_attach(device_t dev)
      * Dispatch the default sleep state to devices.  The lid switch is set
      * to UNKNOWN by default to avoid surprising users.
      */
-    sc->acpi_power_button_sx = acpi_sleep_states[ACPI_STATE_S5] ?
+    sc->acpi_power_button.sx = acpi_sleep_states[ACPI_STATE_S5] ?
 	ACPI_STATE_S5 : ACPI_STATE_UNKNOWN;
-    sc->acpi_lid_switch_sx = ACPI_STATE_UNKNOWN;
-    sc->acpi_standby_sx = acpi_sleep_states[ACPI_STATE_S1] ?
+    sc->acpi_lid_switch.sx = ACPI_STATE_UNKNOWN;
+    sc->acpi_standby.sx = acpi_sleep_states[ACPI_STATE_S1] ?
 	ACPI_STATE_S1 : ACPI_STATE_UNKNOWN;
-    sc->acpi_suspend_sx = acpi_sleep_states[ACPI_STATE_S3] ?
+    sc->acpi_suspend.sx = acpi_sleep_states[ACPI_STATE_S3] ?
 	ACPI_STATE_S3 : ACPI_STATE_UNKNOWN;
 
     /* Pick the first valid sleep state for the sleep button default. */
-    sc->acpi_sleep_button_sx = ACPI_STATE_UNKNOWN;
+    sc->acpi_sleep_button.sx = ACPI_STATE_UNKNOWN;
     for (state = ACPI_STATE_S1; state <= ACPI_STATE_S4; state++)
 	if (acpi_sleep_states[state]) {
-	    sc->acpi_sleep_button_sx = state;
+	    sc->acpi_sleep_button.sx = state;
 	    break;
 	}
 
@@ -2803,17 +2810,24 @@ acpi_sleep_force(void *arg)
 static enum sleep_type
 select_sleep_type(struct acpi_softc *sc, int state)
 {
-    MPASS(state == ACPI_STATE_S3);
+    MPASS(state == ACPI_STATE_S3 || state == ACPI_STATE_S1);
 
     /* The user explicitly requested */
-    if (sc->acpi_s0idle)
+    if (state == ACPI_STATE_S3 &&
+	sc->acpi_suspend.sx == SUSPEND_TO_IDLE)
 	return SUSPEND_TO_IDLE;
 
-    /* The system supports S3, and that's probably best */
-    if (acpi_sleep_states[ACPI_STATE_S3])
-	return SUSPEND;
+    if (state == ACPI_STATE_S1 &&
+	sc->acpi_standby.sx == SUSPEND_TO_IDLE)
+        return SUSPEND_TO_IDLE;
+
+    /* The system supports the HW state, and that's probably best */
+    if (acpi_sleep_states[state])
+	return (enum sleep_type)state;
 
     /* idle is the best we can do. */
+    device_printf(sc->acpi_dev,
+	          "Requested S%d, but using S0IDLE instead\n", state);
     return SUSPEND_TO_IDLE;
 }
 #else
@@ -3654,7 +3668,7 @@ acpi_event_power_button_sleep(void *context)
     ACPI_FUNCTION_TRACE((char *)(uintptr_t)__func__);
 
     if (ACPI_FAILURE(AcpiOsExecute(OSL_NOTIFY_HANDLER,
-	acpi_invoke_sleep_eventhandler, &sc->acpi_power_button_sx)))
+	acpi_invoke_sleep_eventhandler, &sc->acpi_power_button.sx)))
 	return_VALUE (ACPI_INTERRUPT_NOT_HANDLED);
     return_VALUE (ACPI_INTERRUPT_HANDLED);
 }
@@ -3669,7 +3683,7 @@ acpi_event_power_button_wake(void *context)
     ACPI_FUNCTION_TRACE((char *)(uintptr_t)__func__);
 
     status = AcpiOsExecute(OSL_NOTIFY_HANDLER, acpi_invoke_wake_eventhandler,
-			   &sc->acpi_power_button_sx);
+			   &sc->acpi_power_button.sx);
     if (ACPI_FAILURE(status))
 	return_VALUE (ACPI_INTERRUPT_NOT_HANDLED);
 
@@ -3690,7 +3704,7 @@ acpi_event_sleep_button_sleep(void *context)
     ACPI_FUNCTION_TRACE((char *)(uintptr_t)__func__);
 
     if (ACPI_FAILURE(AcpiOsExecute(OSL_NOTIFY_HANDLER,
-	acpi_invoke_sleep_eventhandler, &sc->acpi_sleep_button_sx)))
+	acpi_invoke_sleep_eventhandler, &sc->acpi_sleep_button.sx)))
 	return_VALUE (ACPI_INTERRUPT_NOT_HANDLED);
     return_VALUE (ACPI_INTERRUPT_HANDLED);
 }
@@ -3703,7 +3717,7 @@ acpi_event_sleep_button_wake(void *context)
     ACPI_FUNCTION_TRACE((char *)(uintptr_t)__func__);
 
     if (ACPI_FAILURE(AcpiOsExecute(OSL_NOTIFY_HANDLER,
-	acpi_invoke_wake_eventhandler, &sc->acpi_sleep_button_sx)))
+	acpi_invoke_wake_eventhandler, &sc->acpi_sleep_button.sx)))
 	return_VALUE (ACPI_INTERRUPT_NOT_HANDLED);
     return_VALUE (ACPI_INTERRUPT_HANDLED);
 }
@@ -4030,6 +4044,71 @@ update_state(struct sysctl_oid *oidp, int new_state, int old_state)
 static int
 acpi_sleep_state_sysctl(SYSCTL_HANDLER_ARGS)
 {
+#if defined(__i386__) || defined(__amd64__)
+    struct acpi_softc *sc;
+    char sleep_state[10];
+    int error, new_state, old_state;
+    int *sx, *saved_sx;
+
+    old_state = *(int *)oidp->oid_arg1;
+
+#define SETUP_VARIABLES(event) do { \
+	sc = __containerof(__containerof(arg1, __typeof(sc->acpi_##event), sx),	\
+	    		   struct acpi_softc, acpi_##event);			\
+	MPASS(sc);								\
+	sx = &sc->acpi_##event.sx;						\
+	MPASS(sx);								\
+	saved_sx = &sc->acpi_##event.saved_sx;					\
+	MPASS(saved_sx);							\
+} while (0)
+
+    switch (arg2) {
+    case POWER_BUTTON_S2I:
+	SETUP_VARIABLES(power_button);
+	break;
+    case SLEEP_BUTTON_S2I:
+	SETUP_VARIABLES(sleep_button);
+	break;
+    case LID_SWITCH_S2I:
+	SETUP_VARIABLES(lid_switch);
+	break;
+    case STANDBY_S2I:
+	SETUP_VARIABLES(standby);
+	break;
+    case SUSPEND_S2I:
+	SETUP_VARIABLES(suspend);
+	break;
+    default:
+	__unreachable();
+    };
+#undef SETUP_VARIABLES
+
+    if (*sx == SUSPEND_TO_IDLE)
+	strlcpy(sleep_state, "S0IDLE", 7);
+    else
+	strlcpy(sleep_state, acpi_sstate2sname(old_state), sizeof(sleep_state));
+
+    error = sysctl_handle_string(oidp, sleep_state, sizeof(sleep_state), req);
+    if (error || req->newptr == NULL)
+       return (error);
+
+    if (*sx == acpi_sname2sstate(sleep_state))
+	return (0);
+
+    /* When "enabling" s0idle, leave don't touch the default */
+    if (!strncasecmp(sleep_state, "s0idle", 6) ||
+	!strncasecmp(sleep_state, "s2idle", 6)) {
+	    *saved_sx = *sx;
+	    *sx = SUSPEND_TO_IDLE;
+	    return (0);
+    } else {
+	new_state = acpi_sname2sstate(sleep_state);
+	error = update_state(oidp, new_state, old_state);
+	if (!error)
+	    *saved_sx = *sx;
+	return (error);
+    }
+#else
     char sleep_state[10];
     int error, new_state, old_state;
 
@@ -4041,40 +4120,6 @@ acpi_sleep_state_sysctl(SYSCTL_HANDLER_ARGS)
 	error = update_state(oidp, new_state, old_state);
     }
     return (error);
-}
-
-static int
-acpi_suspend_state_sysctl(SYSCTL_HANDLER_ARGS)
-{
-#if defined(__i386__) || defined(__amd64__)
-    struct acpi_softc *sc;
-    char sleep_state[10];
-    int error, new_state, old_state;
-
-    sc = __containerof(arg1, struct acpi_softc, acpi_suspend_sx);
-    old_state = *(int *)oidp->oid_arg1;
-
-    if (sc->acpi_s0idle)
-	strlcpy(sleep_state, "S0IDLE", 7);
-    else
-	strlcpy(sleep_state, acpi_sstate2sname(old_state), sizeof(sleep_state));
-
-    error = sysctl_handle_string(oidp, sleep_state, sizeof(sleep_state), req);
-    if (error || req->newptr == NULL)
-       return (error);
-
-    /* When "enabling" s0idle, leave don't touch the default */
-    if (!strncasecmp(sleep_state, "s0idle", 6) ||
-	!strncasecmp(sleep_state, "s2idle", 6)) {
-	sc->acpi_s0idle = true;
-	return (0);
-    } else {
-	new_state = acpi_sname2sstate(sleep_state);
-	sc->acpi_s0idle = false;
-	return update_state(oidp, new_state, old_state);
-    }
-#else
-    return acpi_sleep_state_sysctl(oidp, arg1, arg2, req);
 #endif
 }
 
@@ -4442,12 +4487,13 @@ acpi_pm_func(u_long cmd, void *arg, ...)
 
 		switch (state) {
 		case POWER_SLEEP_STATE_STANDBY:
-			acpi_state = sc->acpi_standby_sx;
+			acpi_state = sc->acpi_standby.sx;
 			break;
 		case POWER_SLEEP_STATE_SUSPEND:
-			acpi_state = sc->acpi_suspend_sx;
+			acpi_state = sc->acpi_suspend.sx;
 			break;
 		case POWER_SLEEP_STATE_HIBERNATE:
+			/* FIXME: Needs support for s2idle */
 			acpi_state = ACPI_STATE_S4;
 			break;
 		default:

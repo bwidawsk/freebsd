@@ -177,9 +177,9 @@ acpi_lid_notify_status_changed(void *arg)
     acpi_UserNotify("Lid", sc->lid_handle, sc->lid_status);
 
     if (sc->lid_status == 0)
-	EVENTHANDLER_INVOKE(acpi_sleep_event, acpi_sc->acpi_lid_switch_sx);
+	EVENTHANDLER_INVOKE(acpi_sleep_event, acpi_sc->acpi_lid_switch.sx);
     else
-	EVENTHANDLER_INVOKE(acpi_wakeup_event, acpi_sc->acpi_lid_switch_sx);
+	EVENTHANDLER_INVOKE(acpi_wakeup_event, acpi_sc->acpi_lid_switch.sx);
 
 out:
     ACPI_SERIAL_END(lid);
