@@ -287,9 +287,9 @@ apmioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flag, struct thread *td
 		if ((flag & FWRITE) == 0)
 			return (EPERM);
 		if (acpi_sc->acpi_next_sstate == AWAKE) {
-			if (acpi_sc->acpi_suspend_sx != ACPI_STATE_S5) {
+			if (acpi_sc->acpi_suspend.sx != ACPI_STATE_S5) {
 				error = acpi_ReqSleepState(acpi_sc,
-				    acpi_sc->acpi_suspend_sx);
+				    acpi_sc->acpi_suspend.sx);
 			} else {
 				printf(
 			"power off via apm suspend not supported\n");
@@ -302,9 +302,9 @@ apmioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flag, struct thread *td
 		if ((flag & FWRITE) == 0)
 			return (EPERM);
 		if (acpi_sc->acpi_next_sstate == AWAKE) {
-			if (acpi_sc->acpi_standby_sx != ACPI_STATE_S5) {
+			if (acpi_sc->acpi_standby.sx != ACPI_STATE_S5) {
 				error = acpi_ReqSleepState(acpi_sc,
-				    acpi_sc->acpi_standby_sx);
+				    acpi_sc->acpi_standby.sx);
 			} else {
 				printf(
 			"power off via apm standby not supported\n");
