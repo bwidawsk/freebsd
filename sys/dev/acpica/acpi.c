@@ -2782,6 +2782,20 @@ acpi_sleep_force(void *arg)
 }
 #endif
 
+static int
+sanitize_sstate(struct acpi_softc *sc, int state, bool acpi_err)
+{
+    if (state < ACPI_STATE_S1 || state > ACPI_S_STATES_MAX)
+	return acpi_err ? (AE_BAD_PARAMETER) : (EINVAL);
+    if (!acpi_sleep_states[state]) {
+	device_printf(sc->acpi_dev,
+	    "Sleep state S%d not supported by BIOS\n", state);
+	return acpi_err ? (AE_SUPPORT) : (EOPNOTSUPP);
+    }
+
+    return acpi_err ? (AE_OK) : (0);
+}
+
 /*
  * Request that the system enter the given suspend state.  All /dev/apm
  * devices and devd(8) will be notified.  Userland then has a chance to
@@ -2794,11 +2808,11 @@ acpi_ReqSleepState(struct acpi_softc *sc, int state)
 #if defined(__amd64__) || defined(__i386__)
     struct apm_clone_data *clone;
     ACPI_STATUS status;
+    int err;
 
-    if (state < ACPI_STATE_S1 || state > ACPI_S_STATES_MAX)
-	return (EINVAL);
-    if (!acpi_sleep_states[state])
-	return (EOPNOTSUPP);
+    err = sanitize_sstate(sc, state, false);
+    if (err)
+	return err;
 
     /*
      * If a reboot/shutdown/suspend request is already in progress or
@@ -3037,16 +3051,13 @@ acpi_EnterSleepState(struct acpi_softc *sc, int state)
 {
     ACPI_STATUS status;
     enum acpi_sleep_state slp_state;
+    int err;
 
     ACPI_FUNCTION_TRACE_U32((char *)(uintptr_t)__func__, state);
 
-    if (state < ACPI_STATE_S1 || state > ACPI_S_STATES_MAX)
-	return_ACPI_STATUS (AE_BAD_PARAMETER);
-    if (!acpi_sleep_states[state]) {
-	device_printf(sc->acpi_dev, "Sleep state S%d not supported by BIOS\n",
-	    state);
-	return (AE_SUPPORT);
-    }
+    err = sanitize_sstate(sc, state, true);
+    if (err)
+	 return_ACPI_STATUS (err);
 
     /* Re-entry once we're suspending is not allowed. */
     status = acpi_sleep_disable(sc);
