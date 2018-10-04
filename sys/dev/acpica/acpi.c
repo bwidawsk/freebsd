@@ -2978,7 +2978,6 @@ enum acpi_sleep_state {
 static void
 __do_sleep(struct acpi_softc *sc, int state, enum acpi_sleep_state *pass)
 {
-    ACPI_EVENT_STATUS power_button_status;
     int sleep_result;
     register_t intr;
 
@@ -2999,25 +2998,6 @@ __do_sleep(struct acpi_softc *sc, int state, enum acpi_sleep_state *pass)
 	 * follows Windows behavior.
 	 */
 	AcpiWriteBitRegister(ACPI_BITREG_SCI_ENABLE, ACPI_ENABLE_EVENT);
-
-	/*
-	 * Prevent mis-interpretation of the wakeup by power button as a request
-	 * for power off. Ideally we should post an appropriate wakeup event,
-	 * perhaps using acpi_event_power_button_wake or alike.
-	 *
-	 * Clearing of power button status after wakeup is mandated by ACPI
-	 * specification in section "Fixed Power Button".
-	 *
-	 * XXX As of ACPICA 20121114 AcpiGetEventStatus provides status as 0/1
-	 * corresponding to inactive/active despite its type being
-	 * ACPI_EVENT_STATUS.  In other words, we should not test for
-	 * ACPI_EVENT_FLAG_SET for time being.
-	 */
-	if (ACPI_SUCCESS(AcpiGetEventStatus(ACPI_EVENT_POWER_BUTTON,
-	    &power_button_status)) && power_button_status != 0) {
-	    AcpiClearEvent(ACPI_EVENT_POWER_BUTTON);
-	    device_printf(sc->acpi_dev, "cleared fixed power button status\n");
-	}
     }
 
     intr_restore(intr);
@@ -3555,13 +3535,23 @@ acpi_event_power_button_sleep(void *context)
 UINT32
 acpi_event_power_button_wake(void *context)
 {
+    ACPI_STATUS status;
+    ACPI_EVENT_STATUS power_button_status;
     struct acpi_softc	*sc = (struct acpi_softc *)context;
 
     ACPI_FUNCTION_TRACE((char *)(uintptr_t)__func__);
 
-    if (ACPI_FAILURE(AcpiOsExecute(OSL_NOTIFY_HANDLER,
-	acpi_invoke_wake_eventhandler, &sc->acpi_power_button_sx)))
+    status = AcpiOsExecute(OSL_NOTIFY_HANDLER, acpi_invoke_wake_eventhandler,
+			   &sc->acpi_power_button_sx);
+    if (ACPI_FAILURE(status))
 	return_VALUE (ACPI_INTERRUPT_NOT_HANDLED);
+
+    status = AcpiGetEventStatus(ACPI_EVENT_POWER_BUTTON, &power_button_status);
+    if (ACPI_SUCCESS(status) && power_button_status != 0) {
+	    AcpiClearEvent(ACPI_EVENT_POWER_BUTTON);
+	    device_printf(sc->acpi_dev, "cleared fixed power button status\n");
+    }
+
     return_VALUE (ACPI_INTERRUPT_HANDLED);
 }
 
