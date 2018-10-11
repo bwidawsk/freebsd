@@ -64,6 +64,8 @@ static struct sysctl_oid *spmc_sysctl_tree;
 
 static int acpi_spmc_probe(device_t dev);
 static int acpi_spmc_attach(device_t dev);
+static int acpi_spmc_post_suspend(device_t dev);
+static int acpi_spmc_post_resume(device_t dev);
 static int walk_constraints(ACPI_HANDLE handle);
 
 /*
@@ -99,6 +101,8 @@ static device_method_t acpi_spmc_methods[] = {
 	/* Device interface */
 	DEVMETHOD(device_probe,		acpi_spmc_probe),
 	DEVMETHOD(device_attach,	acpi_spmc_attach),
+	DEVMETHOD(device_post_suspend,	acpi_spmc_post_suspend),
+	DEVMETHOD(device_post_resume,	acpi_spmc_post_resume),
 
 	DEVMETHOD_END
 };
@@ -374,5 +378,41 @@ acpi_spmc_attach(device_t dev)
 	    CTLTYPE_STRING | CTLFLAG_RD, NULL, 0, sysctl_dump_constraints, "A",
 	    "Minimum dstates");
 
+	return (0);
+}
+
+static int
+spmc_do_dsm(device_t dev, uint32_t cmd)
+{
+	ACPI_BUFFER b;
+	ACPI_STATUS err;
+
+	err = acpi_EvaluateDSM(acpi_get_handle(dev), lps0_uuid, SPMC_REVISION,
+			       cmd, NULL, &b);
+	if (ACPI_SUCCESS(err))
+	    AcpiOsFree(b.Pointer);
+
+	return err;
+}
+
+static int
+acpi_spmc_post_suspend(device_t dev)
+{
+	if (spmc_do_dsm(dev, LPS0_SCREEN_OFF))
+		return (ENODEV);
+
+	if (spmc_do_dsm(dev, LPS0_ENTRY)) {
+		spmc_do_dsm(dev, LPS0_SCREEN_ON);
+		return (ENODEV);
+	}
+
+	return (0);
+}
+
+static int
+acpi_spmc_post_resume(device_t dev)
+{
+	spmc_do_dsm(dev, LPS0_EXIT);
+	spmc_do_dsm(dev, LPS0_SCREEN_ON);
 	return (0);
 }
