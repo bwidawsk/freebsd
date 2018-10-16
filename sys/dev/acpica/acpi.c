@@ -3044,11 +3044,11 @@ acpi_sleep_disable(struct acpi_softc *sc)
 }
 
 enum acpi_sleep_state {
-    ACPI_SS_NONE,
-    ACPI_SS_GPE_SET,
-    ACPI_SS_DEV_SUSPEND,
-    ACPI_SS_SLP_PREP,
-    ACPI_SS_SLEPT,
+    ACPI_SS_NONE	=	0<<0,
+    ACPI_SS_GPE_SET	=	1<<0,
+    ACPI_SS_DEV_SUSPEND	=	1<<1,
+    ACPI_SS_SLP_PREP	=	1<<2,
+    ACPI_SS_SLEPT	=	1<<3,
 };
 
 static void
@@ -3145,7 +3145,7 @@ __do_sleep(struct acpi_softc *sc, int state, enum acpi_sleep_state *pass)
     if (state == ACPI_STATE_S4)
 	AcpiEnable();
 
-    *pass = ACPI_SS_SLEPT;
+    *pass |= ACPI_SS_SLEPT;
 }
 
 /*
@@ -3208,7 +3208,7 @@ acpi_EnterSleepState(struct acpi_softc *sc, enum sleep_type stype)
 
     /* Enable any GPEs as appropriate and requested by the user. */
     acpi_wake_prep_walk(state);
-    slp_state = ACPI_SS_GPE_SET;
+    slp_state |= ACPI_SS_GPE_SET;
 
     /*
      * Inform all devices that we are going to sleep.  If at least one
@@ -3222,7 +3222,7 @@ acpi_EnterSleepState(struct acpi_softc *sc, enum sleep_type stype)
 	device_printf(sc->acpi_dev, "device_suspend failed\n");
 	goto backout;
     }
-    slp_state = ACPI_SS_DEV_SUSPEND;
+    slp_state |= ACPI_SS_DEV_SUSPEND;
 
     if (stype != SUSPEND_TO_IDLE) {
 	status = AcpiEnterSleepStatePrep(state);
@@ -3232,7 +3232,7 @@ acpi_EnterSleepState(struct acpi_softc *sc, enum sleep_type stype)
 	    goto backout;
 	}
     }
-    slp_state = ACPI_SS_SLP_PREP;
+    slp_state |= ACPI_SS_SLP_PREP;
 
     if (sc->acpi_sleep_delay > 0)
 	DELAY(sc->acpi_sleep_delay * 1000000);
@@ -3248,7 +3248,7 @@ acpi_EnterSleepState(struct acpi_softc *sc, enum sleep_type stype)
 	    if (ACPI_FAILURE(status))
 		device_printf(sc->acpi_dev, "AcpiEnterSleepState failed - %s\n",
 		    AcpiFormatException(status));
-	    slp_state = ACPI_SS_SLEPT;
+	    slp_state |= ACPI_SS_SLEPT;
 	}
 	break;
     case SUSPEND:
@@ -3269,26 +3269,39 @@ acpi_EnterSleepState(struct acpi_softc *sc, enum sleep_type stype)
      * process.  This handles both the error and success cases.
      */
 backout:
-    if (slp_state >= ACPI_SS_SLP_PREP)
+    if (slp_state & ACPI_SS_SLP_PREP) {
 	resumeclock();
-    if (slp_state >= ACPI_SS_GPE_SET) {
+	slp_state &= ~ACPI_SS_SLP_PREP;
+    }
+
+    if (slp_state & ACPI_SS_GPE_SET) {
 	acpi_wake_prep_walk(state);
 	sc->acpi_sstate = AWAKE;
+	slp_state &= ~ACPI_SS_GPE_SET;
     }
-    if (slp_state >= ACPI_SS_DEV_SUSPEND)
-	DEVICE_RESUME(root_bus);
 
-    if (stype != SUSPEND_TO_IDLE && (slp_state >= ACPI_SS_SLP_PREP))
+    if (slp_state & ACPI_SS_DEV_SUSPEND) {
+	DEVICE_RESUME(root_bus);
+	slp_state &= ~ACPI_SS_DEV_SUSPEND;
+    }
+
+    if (stype != SUSPEND_TO_IDLE && (slp_state & ACPI_SS_SLP_PREP)) {
 	AcpiLeaveSleepState(state);
-    if (slp_state >= ACPI_SS_SLEPT) {
+	slp_state &= ~ACPI_SS_SLP_PREP;
+    }
+
+    if (slp_state & ACPI_SS_SLEPT) {
 #if defined(__i386__) || defined(__amd64__)
 	/* NB: we are still using ACPI timecounter at this point. */
 	resume_TSC();
 #endif
 	acpi_resync_clock(sc);
 	acpi_enable_fixed_events(sc);
+	slp_state &= ~ACPI_SS_SLEPT;
     }
     sc->acpi_next_sstate = AWAKE;
+
+    MPASS(slp_state == 0);
 
     mtx_unlock(&Giant);
 
