@@ -254,9 +254,14 @@ acpi_button_notify_handler(ACPI_HANDLE h, UINT32 notify, void *context)
     sc = (struct acpi_button_softc *)context;
     switch (notify) {
     case ACPI_NOTIFY_BUTTON_PRESSED_FOR_SLEEP:
+	    /* need to do this for lid too */
+	CTR2(KTR_SPARE5, "SLEEP NOTIFY %s (enabled = %d)", __func__,
+	    acpi_PowerTransitionIsEnabled());
 	AcpiOsExecute(OSL_NOTIFY_HANDLER, acpi_button_notify_sleep, sc);
 	break;   
     case ACPI_NOTIFY_BUTTON_PRESSED_FOR_WAKEUP:
+	CTR2(KTR_SPARE5, "WAKEUP NOTIFY %s (enabled = %d)", __func__,
+	    acpi_PowerTransitionIsEnabled());
 	AcpiOsExecute(OSL_NOTIFY_HANDLER, acpi_button_notify_wakeup, sc);
 	break;   
     default:

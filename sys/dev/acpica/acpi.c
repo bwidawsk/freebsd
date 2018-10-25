@@ -3133,9 +3133,10 @@ acpi_PowerTransitionIsEnabled()
 static void
 __do_s0ix(struct acpi_softc *sc)
 {
+    CTR1(KTR_SPARE5, "\t%s: doing s0ix", __func__);
     /* HACK: need to actually find the max cstate for the CPU */
     cpu_mwait(MWAIT_INTRBREAK, MWAIT_C3);
-
+    CTR1(KTR_SPARE5, "\t%s: done s0ix", __func__);
 }
 
 static void
@@ -3143,6 +3144,7 @@ __do_idle(struct acpi_softc *sc)
 {
     register_t intr;
 
+    CTR1(KTR_SPARE5, "%s: doing idle", __func__);
     intr = intr_disable();
     intr_suspend();
     /* XXX: Is this actually required? */
@@ -3166,6 +3168,7 @@ __do_idle(struct acpi_softc *sc)
 
     /* Bring back consoles ASAP */
     cnresume();
+    CTR1(KTR_SPARE5, "%s: done idle", __func__);
 }
 
 static void

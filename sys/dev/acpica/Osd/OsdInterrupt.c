@@ -83,6 +83,7 @@ acpi_intr_handler(void *arg)
 {
 	struct acpi_intr *ai;
 
+	CTR0(KTR_SPARE5, "acpi handler");
 	ai = arg;
 	KASSERT(ai != NULL && ai->ai_handler != NULL,
 	    ("invalid ACPI interrupt handler"));

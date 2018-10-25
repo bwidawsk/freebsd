@@ -1290,6 +1290,10 @@ lapic_handle_intr(int vector, struct trapframe *frame)
 
 	isrc = intr_lookup_source(apic_idt_to_irq(PCPU_GET(apic_id),
 	    vector));
+
+	CTR3(KTR_SPARE5, "lapic vector %d %s (%s)\n", vector,
+	     isrc->is_event->ie_name, isrc->is_event->ie_fullname);
+
 	intr_execute_handlers(isrc, frame);
 }
 
@@ -1302,6 +1306,8 @@ lapic_handle_timer(struct trapframe *frame)
 
 	/* Send EOI first thing. */
 	lapic_eoi();
+
+	CTR0(KTR_SPARE5, "lapic timer");
 
 #if defined(SMP) && !defined(SCHED_ULE)
 	/*
@@ -1422,6 +1428,8 @@ void
 lapic_handle_cmc(void)
 {
 
+	CTR0(KTR_SPARE5, "lapic cmci");
+
 	lapic_eoi();
 	cmc_intr();
 }
@@ -1496,6 +1504,7 @@ lapic_handle_error(void)
 	lapic_write32(LAPIC_ESR, 0);
 	esr = lapic_read32(LAPIC_ESR);
 
+	CTR0(KTR_SPARE5, "lapic error");
 	printf("CPU%d: local APIC error 0x%x\n", PCPU_GET(cpuid), esr);
 	lapic_eoi();
 }

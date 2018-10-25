@@ -154,6 +154,7 @@
 #include <contrib/dev/acpica/include/acpi.h>
 #include <contrib/dev/acpica/include/accommon.h>
 #include <contrib/dev/acpica/include/acevents.h>
+#include <sys/ktr.h>
 
 
 #define _COMPONENT          ACPI_EVENTS
@@ -263,6 +264,8 @@ AcpiEvSciXruptHandler (
     /* Invoke all host-installed SCI handlers */
 
     InterruptHandled |= AcpiEvSciDispatch ();
+
+    CTR1(KTR_SPARE5, "SCI interrupt %d\n", InterruptHandled);
 
     AcpiSciCount++;
     return_UINT32 (InterruptHandled);

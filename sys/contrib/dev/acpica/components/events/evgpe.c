@@ -154,6 +154,8 @@
 #include <contrib/dev/acpica/include/acevents.h>
 #include <contrib/dev/acpica/include/acnamesp.h>
 
+#include <sys/ktr.h>
+
 #define _COMPONENT          ACPI_EVENTS
         ACPI_MODULE_NAME    ("evgpe")
 
@@ -672,12 +674,14 @@ AcpiEvAsynchExecuteGpeMethod (
 
             Notify = Notify->Next;
         }
+	CTR0(KTR_SPARE5, "Notify");
         break;
 
     case ACPI_GPE_DISPATCH_METHOD:
 
         /* Allocate the evaluation information block */
 
+	CTR0(KTR_SPARE5, "Dispatch");
         Info = ACPI_ALLOCATE_ZEROED (sizeof (ACPI_EVALUATE_INFO));
         if (!Info)
         {
