@@ -424,6 +424,14 @@ uart_tty_attach(struct uart_softc *sc)
 
 	tty_makedev(tp, NULL, "u%r", unit);
 
+	/* Try to determine this was registered via cn_init. */
+	if (uart_console.cookie) {
+	    struct consdev *cp;
+	    cp = uart_console.cookie;
+	    MPASS(cp->cn_pri > CN_DEAD);
+	    device_set_console(sc->sc_dev);
+	}
+
 	return (0);
 }
 

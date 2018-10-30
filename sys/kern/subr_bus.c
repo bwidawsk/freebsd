@@ -2468,6 +2468,15 @@ device_set_desc_internal(device_t dev, const char* desc, int copy)
 }
 
 /**
+ * @brief Set a device as having a console
+ */
+void
+device_set_console(device_t dev)
+{
+	dev->flags |= DF_CONSOLE;
+}
+
+/**
  * @brief Set the device's description
  *
  * The value of @c desc should be a string constant that will not
@@ -2718,6 +2727,15 @@ int
 device_is_attached(device_t dev)
 {
 	return (dev->state >= DS_ATTACHED);
+}
+
+/**
+ * @brief Return non-zero if the device is a console device
+ */
+int
+device_is_console(device_t dev)
+{
+	return ((dev->flags & DF_CONSOLE) != 0);
 }
 
 /**
@@ -3818,6 +3836,10 @@ bus_generic_resume_child(device_t dev, device_t child)
 	return (0);
 }
 
+static bool cons_on_suspend = 0;
+SYSCTL_BOOL(_debug, OID_AUTO, cons_on_suspend, CTLFLAG_RWTUN, &cons_on_suspend,
+	false,
+	"Try to preserve console during suspend and resume cycles");
 /**
  * @brief Helper function for implementing DEVICE_SUSPEND()
  *
@@ -3832,6 +3854,7 @@ bus_generic_suspend(device_t dev)
 {
 	int		error;
 	device_t	child;
+	bool		found;
 
 	/*
 	 * Suspend children in the reverse order.
@@ -3841,6 +3864,11 @@ bus_generic_suspend(device_t dev)
 	 * safer to bring down devices in the reverse order.
 	 */
 	TAILQ_FOREACH_REVERSE(child, &dev->children, device_list, link) {
+		/* children also shouldn't be suspended */
+		if (cons_on_suspend && device_is_console(child)) {
+			found = true;
+			continue;
+		}
 		error = BUS_SUSPEND_CHILD(dev, child);
 		if (error != 0) {
 			child = TAILQ_NEXT(child, link);
@@ -3851,6 +3879,35 @@ bus_generic_suspend(device_t dev)
 			return (error);
 		}
 	}
+
+	/*
+	 * HACK: The VT subsystem entangles the console concept is such a way
+	 * that it isn't easy to determine whether or not it is *the* console we
+	 * want to preserve at suspend. As a result, the easiest thing to do is
+	 * restore the device right now if no other console was found. The
+	 * better way to do this would be to actually figure out at attach time
+	 * that the VGA/EFI device is the kernel console, and set the flag
+	 * appropriately.
+	 *
+	 * Note that all the children need to be restored since we do not know
+	 * if the graphics device can operate without its children.
+	 */
+	if (cons_on_suspend && !found) {
+		device_t *devs;
+		int devcount, err;
+
+		err = devclass_get_devices(devclass_find("vgapci"), &devs, &devcount);
+		if (!err && devcount) {
+			while (--devcount) {
+				dev = devs[devcount];
+				DEVICE_RESUME(dev);
+				TAILQ_FOREACH_FROM(child, &dev->children, link)
+					BUS_RESUME_CHILD(dev, child);
+				device_printf(dev, "Resumed console device\n");
+			}
+		}
+	}
+
 	return (0);
 }
 
