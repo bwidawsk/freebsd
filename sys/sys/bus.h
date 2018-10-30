@@ -95,6 +95,7 @@ struct u_device {
 #define	DF_QUIET_CHILDREN 0x200		/* Default to quiet for all my children */
 #define	DF_ATTACHED_ONCE 0x400		/* Has been attached at least once */
 #define	DF_NEEDNOMATCH	0x800		/* Has a pending NOMATCH event */
+#define DF_CONSOLE	0x1000		/* This device is used as a console */
 
 /**
  * @brief Device request structure used for ioctl's.
@@ -596,6 +597,7 @@ struct sysctl_oid *device_get_sysctl_tree(device_t dev);
 int	device_has_quiet_children(device_t dev);
 int	device_is_alive(device_t dev);	/* did probe succeed? */
 int	device_is_attached(device_t dev);	/* did attach succeed? */
+int	device_is_console(device_t dev);
 int	device_is_enabled(device_t dev);
 int	device_is_suspended(device_t dev);
 int	device_is_quiet(device_t dev);
@@ -608,6 +610,7 @@ int	device_probe_child(device_t bus, device_t dev);
 int	device_quiesce(device_t dev);
 void	device_quiet(device_t dev);
 void	device_quiet_children(device_t dev);
+void	device_set_console(device_t dev);
 void	device_set_desc(device_t dev, const char* desc);
 void	device_set_desc_copy(device_t dev, const char* desc);
 int	device_set_devclass(device_t dev, const char *classname);
