@@ -124,11 +124,11 @@ static int	hwpstate_get_info_from_msr(device_t dev);
 static int	hwpstate_goto_pstate(device_t dev, int pstate_id);
 
 static int	hwpstate_verbose;
-SYSCTL_INT(_debug, OID_AUTO, hwpstate_verbose, CTLFLAG_RWTUN,
+SYSCTL_INT(_debug, OID_AUTO, hwpstate_amd_verbose, CTLFLAG_RWTUN,
     &hwpstate_verbose, 0, "Debug hwpstate");
 
 static int	hwpstate_verify;
-SYSCTL_INT(_debug, OID_AUTO, hwpstate_verify, CTLFLAG_RWTUN,
+SYSCTL_INT(_debug, OID_AUTO, hwpstate_amd_verify, CTLFLAG_RWTUN,
     &hwpstate_verify, 0, "Verify P-state after setting");
 
 static device_method_t hwpstate_methods[] = {
@@ -151,14 +151,14 @@ static device_method_t hwpstate_methods[] = {
 	{0, 0}
 };
 
-static devclass_t hwpstate_devclass;
-static driver_t hwpstate_driver = {
-	"hwpstate",
+static devclass_t hwpstate_amd_devclass;
+static driver_t hwpstate_amd_driver = {
+	"hwpstate_amd",
 	hwpstate_methods,
 	sizeof(struct hwpstate_softc),
 };
 
-DRIVER_MODULE(hwpstate, cpu, hwpstate_driver, hwpstate_devclass, 0, 0);
+DRIVER_MODULE(hwpstate_amd, cpu, hwpstate_amd_driver, hwpstate_amd_devclass, 0, 0);
 
 /*
  * Go to Px-state on all cpus considering the limit.
@@ -312,7 +312,7 @@ static void
 hwpstate_identify(driver_t *driver, device_t parent)
 {
 
-	if (device_find_child(parent, "hwpstate", -1) != NULL)
+	if (device_find_child(parent, "hwpstate_amd", -1) != NULL)
 		return;
 
 	if (cpu_vendor_id != CPU_VENDOR_AMD || CPUID_TO_FAMILY(cpu_id) < 0x10)
@@ -326,10 +326,10 @@ hwpstate_identify(driver_t *driver, device_t parent)
 		return;
 	}
 
-	if (resource_disabled("hwpstate", 0))
+	if (resource_disabled("hwpstate_amd", 0))
 		return;
 
-	if (BUS_ADD_CHILD(parent, 10, "hwpstate", -1) == NULL)
+	if (BUS_ADD_CHILD(parent, 10, "hwpstate_amd", -1) == NULL)
 		device_printf(parent, "hwpstate: add child failed\n");
 }
 
