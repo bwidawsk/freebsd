@@ -50,6 +50,8 @@ __FBSDID("$FreeBSD$");
 
 #include "cpufreq_if.h"
 
+extern bool intel_speed_shift;
+
 /*
  * Support for ACPI processor performance states (Px) according to
  * section 8.3.3 of the ACPI 2.0c specification.
@@ -143,6 +145,9 @@ acpi_perf_identify(driver_t *driver, device_t parent)
 {
 	ACPI_HANDLE handle;
 	device_t dev;
+
+	if (intel_speed_shift)
+		return;
 
 	/* Make sure we're not being doubly invoked. */
 	if (device_find_child(parent, "acpi_perf", -1) != NULL)

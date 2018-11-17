@@ -50,6 +50,8 @@ __FBSDID("$FreeBSD$");
 #include <dev/acpica/acpivar.h>
 #include "acpi_if.h"
 
+extern bool intel_speed_shift;
+
 /* Status/control registers (from the IA-32 System Programming Guide). */
 #define MSR_PERF_STATUS		0x198
 #define MSR_PERF_CTL		0x199
@@ -915,6 +917,10 @@ static void
 est_identify(driver_t *driver, device_t parent)
 {
 	device_t child;
+
+	/* If the Intel driver is handling this */
+	if (intel_speed_shift)
+		return;
 
 	/* Make sure we're not being doubly invoked. */
 	if (device_find_child(parent, "est", -1) != NULL)
