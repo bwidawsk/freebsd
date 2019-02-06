@@ -422,11 +422,37 @@ out:
 }
 
 static int
+cpufreq_get_frequency(device_t dev)
+{
+	struct cf_setting set;
+
+	if (CPUFREQ_DRV_GET(dev, &set) != 0)
+		return (-1);
+
+	return (set.freq);
+}
+
+/* Returns the index into *levels with the match */
+static int
+cpufreq_get_level(device_t dev, struct cf_level *levels, int count)
+{
+	int i, freq;
+
+	if ((freq = cpufreq_get_frequency(dev)) < 0)
+		return (-1);
+	for (i = 0; i < count; i++)
+		if (freq == levels[i].total_set.freq)
+			return (i);
+
+	return (-1);
+}
+
+static int
 cf_get_method(device_t dev, struct cf_level *level)
 {
 	struct cpufreq_softc *sc;
 	struct cf_level *levels;
-	struct cf_setting *curr_set, set;
+	struct cf_setting *curr_set;
 	struct pcpu *pc;
 	device_t *devs;
 	int bdiff, count, diff, error, i, n, numdevs;
@@ -477,15 +503,10 @@ cf_get_method(device_t dev, struct cf_level *level)
 	 */
 	CF_MTX_LOCK(&sc->lock);
 	for (n = 0; n < numdevs && curr_set->freq == CPUFREQ_VAL_UNKNOWN; n++) {
-		if (!device_is_attached(devs[n]))
-			continue;
-		if (CPUFREQ_DRV_GET(devs[n], &set) != 0)
-			continue;
-		for (i = 0; i < count; i++) {
-			if (set.freq == levels[i].total_set.freq) {
-				sc->curr_level = levels[i];
-				break;
-			}
+		i = cpufreq_get_level(devs[n], levels, count);
+		if (i >= 0) {
+			sc->curr_level = levels[i];
+			break;
 		}
 	}
 	free(devs, M_TEMP);
