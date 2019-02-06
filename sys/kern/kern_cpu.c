@@ -444,20 +444,39 @@ cf_get_method(device_t cf_dev, struct cf_level *level)
 	struct cf_setting *curr_set;
 	struct pcpu *pc;
 	device_t *devs;
-	int bdiff, count, diff, error, i, n, numdevs;
+	int bdiff, count, diff, error, i, n, numdevs, type;
 	uint64_t rate;
 
 	sc = device_get_softc(cf_dev);
 	error = 0;
 	levels = NULL;
 
-	/* If we already know the current frequency, we're done. */
+	/*
+	 * If we already know the current frequency, and the driver didn't ask
+	 * for uncached usage, we're done.
+	 */
 	CF_MTX_LOCK(&sc->lock);
 	curr_set = &sc->curr_level.total_set;
-	if (curr_set->freq != CPUFREQ_VAL_UNKNOWN) {
+	error = CPUFREQ_DRV_TYPE(sc->cf_drv_dev, &type);
+	if (error == 0 && (type & CPUFREQ_FLAG_UNCACHED)) {
+		struct cf_setting set;
+
+		/*
+		 * If the driver wants to always report back the real frequency,
+		 * first try the driver and if that fails, fall back to
+		 * estimating.
+		 */
+		if (CPUFREQ_DRV_GET(sc->cf_drv_dev, &set) != 0)
+			goto estimate;
+		sc->curr_level.total_set = set;
+		goto out;
+	} else if (curr_set->freq != CPUFREQ_VAL_UNKNOWN) {
 		CF_DEBUG("get returning known freq %d\n", curr_set->freq);
+		error = (0);
 		goto out;
 	}
+
+	MPASS(error != 0 || (type & CPUFREQ_FLAG_UNCACHED) == 0);
 	CF_MTX_UNLOCK(&sc->lock);
 
 	/*
@@ -504,6 +523,7 @@ cf_get_method(device_t cf_dev, struct cf_level *level)
 		goto out;
 	}
 
+estimate:
 	/*
 	 * We couldn't find an exact match, so attempt to estimate and then
 	 * match against a level.
