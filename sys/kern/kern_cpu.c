@@ -454,7 +454,7 @@ cf_get_method(device_t dev, struct cf_level *level)
 	levels = malloc(count * sizeof(*levels), M_TEMP, M_NOWAIT);
 	if (levels == NULL)
 		return (ENOMEM);
-	error = CPUFREQ_LEVELS(sc->dev, levels, &count);
+	error = CPUFREQ_LEVELS(dev, levels, &count);
 	if (error) {
 		if (error == E2BIG)
 			printf("cpufreq: need to increase CF_MAX_LEVELS\n");
