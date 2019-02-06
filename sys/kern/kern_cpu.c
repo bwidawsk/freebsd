@@ -549,6 +549,60 @@ out:
 	return (error);
 }
 
+/* NB: The code currently may have a softc that isn't dev's softc */
+static int
+__add_levels(device_t dev, struct cpufreq_softc *sc, struct cf_setting_lst *rel_sets)
+{
+	struct cf_setting_array *set_arr;
+	static struct cf_setting sets[MAX_SETTINGS];
+	int type, set_count, error;
+
+	/* Skip devices that aren't ready. */
+	if (!device_is_attached(dev))
+		return (0);
+
+	/*
+	 * Get settings, skipping drivers that offer no settings or
+	 * provide settings for informational purposes only.
+	 */
+	error = CPUFREQ_DRV_TYPE(dev, &type);
+	if (error || (type & CPUFREQ_FLAG_INFO_ONLY)) {
+		if (error == 0) {
+			CF_DEBUG("skipping info-only driver %s\n",
+			    device_get_nameunit(dev));
+		}
+		goto out;
+	}
+
+	set_count = MAX_SETTINGS;
+	error = CPUFREQ_DRV_SETTINGS(dev, sets, &set_count);
+	if (error || set_count == 0)
+		goto out;
+
+	/* Add the settings to our absolute/relative lists. */
+	switch (type & CPUFREQ_TYPE_MASK) {
+	case CPUFREQ_TYPE_ABSOLUTE:
+		error = cpufreq_insert_abs(sc, sets, set_count);
+		break;
+	case CPUFREQ_TYPE_RELATIVE:
+		CF_DEBUG("adding %d relative settings\n", set_count);
+		set_arr = malloc(sizeof(*set_arr), M_TEMP, M_NOWAIT);
+		if (set_arr == NULL) {
+			error = ENOMEM;
+			goto out;
+		}
+		bcopy(sets, set_arr->sets, set_count * sizeof(*sets));
+		set_arr->count = set_count;
+		TAILQ_INSERT_TAIL(rel_sets, set_arr, link);
+		break;
+	default:
+		error = EINVAL;
+	}
+
+out:
+	return (error);
+}
+
 static int
 cf_levels_method(device_t dev, struct cf_level *levels, int *count)
 {
@@ -556,10 +610,9 @@ cf_levels_method(device_t dev, struct cf_level *levels, int *count)
 	struct cf_setting_lst rel_sets;
 	struct cpufreq_softc *sc;
 	struct cf_level *lev;
-	struct cf_setting *sets;
 	struct pcpu *pc;
 	device_t *devs;
-	int error, i, numdevs, set_count, type;
+	int error, i, numdevs;
 	uint64_t rate;
 
 	if (levels == NULL || count == NULL)
@@ -570,55 +623,11 @@ cf_levels_method(device_t dev, struct cf_level *levels, int *count)
 	error = device_get_children(device_get_parent(dev), &devs, &numdevs);
 	if (error)
 		return (error);
-	sets = malloc(MAX_SETTINGS * sizeof(*sets), M_TEMP, M_NOWAIT);
-	if (sets == NULL) {
-		free(devs, M_TEMP);
-		return (ENOMEM);
-	}
 
 	/* Get settings from all cpufreq drivers. */
 	CF_MTX_LOCK(&sc->lock);
 	for (i = 0; i < numdevs; i++) {
-		/* Skip devices that aren't ready. */
-		if (!device_is_attached(devs[i]))
-			continue;
-
-		/*
-		 * Get settings, skipping drivers that offer no settings or
-		 * provide settings for informational purposes only.
-		 */
-		error = CPUFREQ_DRV_TYPE(devs[i], &type);
-		if (error || (type & CPUFREQ_FLAG_INFO_ONLY)) {
-			if (error == 0) {
-				CF_DEBUG("skipping info-only driver %s\n",
-				    device_get_nameunit(devs[i]));
-			}
-			continue;
-		}
-		set_count = MAX_SETTINGS;
-		error = CPUFREQ_DRV_SETTINGS(devs[i], sets, &set_count);
-		if (error || set_count == 0)
-			continue;
-
-		/* Add the settings to our absolute/relative lists. */
-		switch (type & CPUFREQ_TYPE_MASK) {
-		case CPUFREQ_TYPE_ABSOLUTE:
-			error = cpufreq_insert_abs(sc, sets, set_count);
-			break;
-		case CPUFREQ_TYPE_RELATIVE:
-			CF_DEBUG("adding %d relative settings\n", set_count);
-			set_arr = malloc(sizeof(*set_arr), M_TEMP, M_NOWAIT);
-			if (set_arr == NULL) {
-				error = ENOMEM;
-				goto out;
-			}
-			bcopy(sets, set_arr->sets, set_count * sizeof(*sets));
-			set_arr->count = set_count;
-			TAILQ_INSERT_TAIL(&rel_sets, set_arr, link);
-			break;
-		default:
-			error = EINVAL;
-		}
+		error = __add_levels(devs[i], sc, &rel_sets);
 		if (error)
 			goto out;
 	}
@@ -628,6 +637,7 @@ cf_levels_method(device_t dev, struct cf_level *levels, int *count)
 	 * then cache the clockrate for later use as our base frequency.
 	 */
 	if (TAILQ_EMPTY(&sc->all_levels)) {
+		struct cf_setting set;
 		if (sc->max_mhz == CPUFREQ_VAL_UNKNOWN) {
 			sc->max_mhz = cpu_get_nominal_mhz(dev);
 			/*
@@ -641,10 +651,10 @@ cf_levels_method(device_t dev, struct cf_level *levels, int *count)
 				sc->max_mhz = rate / 1000000;
 			}
 		}
-		memset(&sets[0], CPUFREQ_VAL_UNKNOWN, sizeof(*sets));
-		sets[0].freq = sc->max_mhz;
-		sets[0].dev = NULL;
-		error = cpufreq_insert_abs(sc, sets, 1);
+		memset(&set, CPUFREQ_VAL_UNKNOWN, sizeof(set));
+		set.freq = sc->max_mhz;
+		set.dev = NULL;
+		error = cpufreq_insert_abs(sc, &set, 1);
 		if (error)
 			goto out;
 	}
@@ -690,7 +700,6 @@ out:
 		free(set_arr, M_TEMP);
 	}
 	free(devs, M_TEMP);
-	free(sets, M_TEMP);
 	return (error);
 }
 
