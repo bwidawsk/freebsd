@@ -76,6 +76,7 @@ struct cpufreq_softc {
 	int				all_count;
 	int				max_mhz;
 	device_t			cf_dev;
+	device_t			cf_drv_dev;
 	struct sysctl_ctx_list		sysctl_ctx;
 	struct task			startup_task;
 	struct cf_level			*levels_buf;
@@ -149,7 +150,6 @@ cpufreq_attach(device_t cf_dev)
 	struct pcpu *pc;
 	device_t parent;
 	uint64_t rate;
-	int numdevs;
 
 	CF_DEBUG("initializing %s\n", device_get_nameunit(cf_dev));
 	sc = device_get_softc(cf_dev);
@@ -170,15 +170,6 @@ cpufreq_attach(device_t cf_dev)
 		else
 			sc->max_mhz = CPUFREQ_VAL_UNKNOWN;
 	}
-
-	/*
-	 * Only initialize one set of sysctls for all CPUs.  In the future,
-	 * if multiple CPUs can have different settings, we can move these
-	 * sysctls to be under every CPU instead of just the first one.
-	 */
-	numdevs = devclass_get_count(cpufreq_dc);
-	if (numdevs > 1)
-		return (0);
 
 	CF_DEBUG("initializing one-time data for %s\n",
 	    device_get_nameunit(cf_dev));
@@ -216,7 +207,6 @@ cpufreq_detach(device_t cf_dev)
 {
 	struct cpufreq_softc *sc;
 	struct cf_saved_freq *saved_freq;
-	int numdevs;
 
 	CF_DEBUG("shutdown %s\n", device_get_nameunit(cf_dev));
 	sc = device_get_softc(cf_dev);
@@ -227,12 +217,7 @@ cpufreq_detach(device_t cf_dev)
 		free(saved_freq, M_TEMP);
 	}
 
-	/* Only clean up these resources when the last device is detaching. */
-	numdevs = devclass_get_count(cpufreq_dc);
-	if (numdevs == 1) {
-		CF_DEBUG("final shutdown for %s\n", device_get_nameunit(cf_dev));
-		free(sc->levels_buf, M_DEVBUF);
-	}
+	free(sc->levels_buf, M_DEVBUF);
 
 	return (0);
 }
@@ -627,11 +612,19 @@ cf_levels_method(device_t cf_dev, struct cf_level *levels, int *count)
 
 	/* Get settings from all cpufreq drivers. */
 	CF_MTX_LOCK(&sc->lock);
-	for (i = 0; i < numdevs; i++) {
-		error = __add_levels(devs[i], sc, &rel_sets);
-		if (error)
-			goto out;
-	}
+	error = __add_levels(sc->cf_drv_dev, sc, &rel_sets);
+	/* Fall back to legacy style enumeration if the frequency device doesn't
+	 * implement a needed interface. In general it should be safe to remove
+	 * this fallback once all frequency drivers are checked.
+	 */
+	if (error == ENXIO) {
+		for (i = 0; i < numdevs; i++) {
+			error = __add_levels(devs[i], sc, &rel_sets);
+			if (error)
+				goto out;
+		}
+	} else if (error)
+		goto out;
 
 	/*
 	 * If there are no absolute levels, create a fake one at 100%.  We
@@ -1046,7 +1039,7 @@ out:
 }
 
 static void
-cpufreq_add_freq_driver_sysctl(device_t cf_dev, device_t cf_drv_dev)
+cpufreq_add_freq_driver_sysctl(device_t cf_dev)
 {
 	struct cpufreq_softc *sc;
 
@@ -1054,7 +1047,7 @@ cpufreq_add_freq_driver_sysctl(device_t cf_dev, device_t cf_drv_dev)
 	SYSCTL_ADD_STRING(&sc->sysctl_ctx,
 			SYSCTL_CHILDREN(device_get_sysctl_tree(cf_dev)),
 			OID_AUTO, "freq_driver", CTLFLAG_RD,
-			(char *)(uintptr_t)device_get_name(cf_drv_dev), 0,
+			(char *)(uintptr_t)device_get_name(sc->cf_drv_dev), 0,
 			"cpufreq driver used by this cpu");
 }
 
@@ -1079,7 +1072,8 @@ cpufreq_register(device_t cf_drv_dev)
 	if ((cf_dev = device_find_child(cpu_dev, "cpufreq", -1))) {
 		sc = device_get_softc(cf_dev);
 		sc->max_mhz = CPUFREQ_VAL_UNKNOWN;
-		cpufreq_add_freq_driver_sysctl(cf_dev, dev);
+		sc->cf_drv_dev = cf_drv_dev;
+		cpufreq_add_freq_driver_sysctl(cf_dev);
 		return (0);
 	}
 
@@ -1090,7 +1084,12 @@ cpufreq_register(device_t cf_drv_dev)
 	device_quiet(cf_dev);
 
 	error = device_probe_and_attach(cf_dev);
-	cpufreq_add_freq_driver_sysctl(cf_dev, dev);
+	if (error)
+		return (error);
+
+	sc = device_get_softc(cf_dev);
+	sc->cf_drv_dev = cf_drv_dev;
+	cpufreq_add_freq_driver_sysctl(cf_dev);
 	return (error);
 }
 
@@ -1099,6 +1098,7 @@ cpufreq_unregister(device_t cf_drv_dev)
 {
 	device_t cf_dev, *devs;
 	int cfcount, devcount, error, i, type;
+	struct cpufreq_softc *sc;
 
 	/*
 	 * If this is the last cpufreq child device, remove the control
@@ -1115,15 +1115,20 @@ cpufreq_unregister(device_t cf_drv_dev)
 		free(devs, M_TEMP);
 		return (0);
 	}
-	cfcount = 0;
-	for (i = 0; i < devcount; i++) {
-		if (!device_is_attached(devs[i]))
-			continue;
-		if (CPUFREQ_DRV_TYPE(devs[i], &type) == 0)
-			cfcount++;
-	}
-	if (cfcount <= 1)
+
+	sc = device_get_softc(cf_dev);
+	if (sc->cf_drv_dev == cf_drv_dev) {
 		device_delete_child(device_get_parent(cf_dev), cf_dev);
+	} else { cfcount = 0;
+		for (i = 0; i < devcount; i++) {
+			if (!device_is_attached(devs[i]))
+				continue;
+			if (CPUFREQ_DRV_TYPE(devs[i], &type) == 0)
+				cfcount++;
+		}
+		if (cfcount <= 1)
+			device_delete_child(device_get_parent(cf_dev), cf_dev);
+	}
 	free(devs, M_TEMP);
 
 	return (0);
