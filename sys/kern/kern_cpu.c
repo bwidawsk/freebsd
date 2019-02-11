@@ -143,6 +143,11 @@ SYSCTL_INT(_debug_cpufreq, OID_AUTO, lowest, CTLFLAG_RWTUN, &cf_lowest_freq, 1,
 SYSCTL_INT(_debug_cpufreq, OID_AUTO, verbose, CTLFLAG_RWTUN, &cf_verbose, 1,
     "Print verbose debugging messages");
 
+/*
+ * This is called as the result of a hardware specific frequency control driver
+ * calling cpufreq_register. It provides a general interface for system wide
+ * frequency controls and operates on a per cpu basic.
+ */
 static int
 cpufreq_attach(device_t cf_dev)
 {
@@ -164,6 +169,7 @@ cpufreq_attach(device_t cf_dev)
 	sc->max_mhz = cpu_get_nominal_mhz(cf_dev);
 	/* If that fails, try to measure the current rate */
 	if (sc->max_mhz <= 0) {
+		CF_DEBUG("Unable to obtain nominal frequency.\n");
 		pc = cpu_get_pcpu(cf_dev);
 		if (cpu_est_clockrate(pc->pc_cpuid, &rate) == 0)
 			sc->max_mhz = rate / 1000000;
@@ -436,6 +442,12 @@ __get_level(device_t cf_drv_dev, struct cf_level *levels, int count)
 	return -(ENOENT);
 }
 
+/*
+ * Used by the cpufreq core, this function will populate *level with the current
+ * frequency as either determined by a cached value sc->curr_level, or in the
+ * case the lower level driver has set the CPUFREQ_FLAG_UNCACHED flag, it will
+ * obtain the frequency from the driver itself.
+ */
 static int
 cf_get_method(device_t cf_dev, struct cf_level *level)
 {
@@ -468,6 +480,7 @@ cf_get_method(device_t cf_dev, struct cf_level *level)
 		if (CPUFREQ_DRV_GET(sc->cf_drv_dev, &set) != 0)
 			goto estimate;
 		sc->curr_level.total_set = set;
+		CF_DEBUG("get returning immediate freq %d\n", curr_set->freq);
 		goto out;
 	} else if (curr_set->freq != CPUFREQ_VAL_UNKNOWN) {
 		CF_DEBUG("get returning known freq %d\n", curr_set->freq);
@@ -507,6 +520,9 @@ cf_get_method(device_t cf_dev, struct cf_level *level)
 	i = __get_level(sc->cf_drv_dev, levels, count);
 	if (i >= 0)
 		sc->curr_level = levels[i];
+	else
+		CF_DEBUG("Couldn't find supported level for %s\n",
+		    device_get_nameunit(sc->cf_drv_dev));
 
 	if (curr_set->freq != CPUFREQ_VAL_UNKNOWN) {
 		CF_DEBUG("get matched freq %d from drivers\n", curr_set->freq);
@@ -545,6 +561,10 @@ out:
 	return (error);
 }
 
+/*
+ * Either directly settings obtained from the cpufreq driver, or build a list of
+ * relative settings to be integrated later against an absolute max.
+ */
 static int
 __add_levels(device_t cf_dev, struct cf_setting_lst *rel_sets)
 {
@@ -631,6 +651,9 @@ cf_levels_method(device_t cf_dev, struct cf_level *levels, int *count)
 	 */
 	if (TAILQ_EMPTY(&sc->all_levels)) {
 		struct cf_setting set;
+
+		CF_DEBUG("No absolute levels returned by driver\n");
+
 		if (sc->max_mhz == CPUFREQ_VAL_UNKNOWN) {
 			sc->max_mhz = cpu_get_nominal_mhz(cf_dev);
 			/*
