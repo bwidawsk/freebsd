@@ -1011,11 +1011,25 @@ out:
 	return (error);
 }
 
+static void
+cpufreq_add_freq_driver_sysctl(device_t cf_dev, device_t cf_drv_dev)
+{
+	struct cpufreq_softc *sc;
+
+	sc = device_get_softc(cf_dev);
+	SYSCTL_ADD_STRING(&sc->sysctl_ctx,
+			SYSCTL_CHILDREN(device_get_sysctl_tree(cf_dev)),
+			OID_AUTO, "freq_driver", CTLFLAG_RD,
+			(char *)(uintptr_t)device_get_name(cf_drv_dev), 0,
+			"cpufreq driver used by this cpu");
+}
+
 int
 cpufreq_register(device_t dev)
 {
 	struct cpufreq_softc *sc;
 	device_t cf_dev, cpu_dev;
+	int error;
 
 	/* Add a sysctl to get each driver's settings separately. */
 	SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),
@@ -1031,6 +1045,7 @@ cpufreq_register(device_t dev)
 	if ((cf_dev = device_find_child(cpu_dev, "cpufreq", -1))) {
 		sc = device_get_softc(cf_dev);
 		sc->max_mhz = CPUFREQ_VAL_UNKNOWN;
+		cpufreq_add_freq_driver_sysctl(cf_dev, dev);
 		return (0);
 	}
 
@@ -1040,7 +1055,9 @@ cpufreq_register(device_t dev)
 		return (ENOMEM);
 	device_quiet(cf_dev);
 
-	return (device_probe_and_attach(cf_dev));
+	error = device_probe_and_attach(cf_dev);
+	cpufreq_add_freq_driver_sysctl(cf_dev, dev);
+	return (error);
 }
 
 int
