@@ -75,7 +75,7 @@ struct cpufreq_softc {
 	struct cf_level_lst		all_levels;
 	int				all_count;
 	int				max_mhz;
-	device_t			dev;
+	device_t			cf_dev;
 	struct sysctl_ctx_list		sysctl_ctx;
 	struct task			startup_task;
 	struct cf_level			*levels_buf;
@@ -99,13 +99,13 @@ TAILQ_HEAD(cf_setting_lst, cf_setting_array);
 		printf("cpufreq: " msg);	\
 	} while (0)
 
-static int	cpufreq_attach(device_t dev);
+static int	cpufreq_attach(device_t cf_dev);
 static void	cpufreq_startup_task(void *ctx, int pending);
-static int	cpufreq_detach(device_t dev);
-static int	cf_set_method(device_t dev, const struct cf_level *level,
+static int	cpufreq_detach(device_t cf_dev);
+static int	cf_set_method(device_t cf_dev, const struct cf_level *level,
 		    int priority);
-static int	cf_get_method(device_t dev, struct cf_level *level);
-static int	cf_levels_method(device_t dev, struct cf_level *levels,
+static int	cf_get_method(device_t cf_dev, struct cf_level *level);
+static int	cf_levels_method(device_t cf_dev, struct cf_level *levels,
 		    int *count);
 static int	cpufreq_insert_abs(struct cpufreq_softc *sc,
 		    struct cf_setting *sets, int count);
@@ -143,7 +143,7 @@ SYSCTL_INT(_debug_cpufreq, OID_AUTO, verbose, CTLFLAG_RWTUN, &cf_verbose, 1,
     "Print verbose debugging messages");
 
 static int
-cpufreq_attach(device_t dev)
+cpufreq_attach(device_t cf_dev)
 {
 	struct cpufreq_softc *sc;
 	struct pcpu *pc;
@@ -151,20 +151,20 @@ cpufreq_attach(device_t dev)
 	uint64_t rate;
 	int numdevs;
 
-	CF_DEBUG("initializing %s\n", device_get_nameunit(dev));
-	sc = device_get_softc(dev);
-	parent = device_get_parent(dev);
-	sc->dev = dev;
+	CF_DEBUG("initializing %s\n", device_get_nameunit(cf_dev));
+	sc = device_get_softc(cf_dev);
+	parent = device_get_parent(cf_dev);
+	sc->cf_dev = cf_dev;
 	sysctl_ctx_init(&sc->sysctl_ctx);
 	TAILQ_INIT(&sc->all_levels);
 	CF_MTX_INIT(&sc->lock);
 	sc->curr_level.total_set.freq = CPUFREQ_VAL_UNKNOWN;
 	SLIST_INIT(&sc->saved_freq);
 	/* Try to get nominal CPU freq to use it as maximum later if needed */
-	sc->max_mhz = cpu_get_nominal_mhz(dev);
+	sc->max_mhz = cpu_get_nominal_mhz(cf_dev);
 	/* If that fails, try to measure the current rate */
 	if (sc->max_mhz <= 0) {
-		pc = cpu_get_pcpu(dev);
+		pc = cpu_get_pcpu(cf_dev);
 		if (cpu_est_clockrate(pc->pc_cpuid, &rate) == 0)
 			sc->max_mhz = rate / 1000000;
 		else
@@ -181,7 +181,7 @@ cpufreq_attach(device_t dev)
 		return (0);
 
 	CF_DEBUG("initializing one-time data for %s\n",
-	    device_get_nameunit(dev));
+	    device_get_nameunit(cf_dev));
 	sc->levels_buf = malloc(CF_MAX_LEVELS * sizeof(*sc->levels_buf),
 	    M_DEVBUF, M_WAITOK);
 	SYSCTL_ADD_PROC(&sc->sysctl_ctx,
@@ -197,7 +197,7 @@ cpufreq_attach(device_t dev)
 	 * Queue a one-shot broadcast that levels have changed.
 	 * It will run once the system has completed booting.
 	 */
-	TASK_INIT(&sc->startup_task, 0, cpufreq_startup_task, dev);
+	TASK_INIT(&sc->startup_task, 0, cpufreq_startup_task, cf_dev);
 	taskqueue_enqueue(taskqueue_thread, &sc->startup_task);
 
 	return (0);
@@ -212,14 +212,14 @@ cpufreq_startup_task(void *ctx, int pending)
 }
 
 static int
-cpufreq_detach(device_t dev)
+cpufreq_detach(device_t cf_dev)
 {
 	struct cpufreq_softc *sc;
 	struct cf_saved_freq *saved_freq;
 	int numdevs;
 
-	CF_DEBUG("shutdown %s\n", device_get_nameunit(dev));
-	sc = device_get_softc(dev);
+	CF_DEBUG("shutdown %s\n", device_get_nameunit(cf_dev));
+	sc = device_get_softc(cf_dev);
 	sysctl_ctx_free(&sc->sysctl_ctx);
 
 	while ((saved_freq = SLIST_FIRST(&sc->saved_freq)) != NULL) {
@@ -230,7 +230,7 @@ cpufreq_detach(device_t dev)
 	/* Only clean up these resources when the last device is detaching. */
 	numdevs = devclass_get_count(cpufreq_dc);
 	if (numdevs == 1) {
-		CF_DEBUG("final shutdown for %s\n", device_get_nameunit(dev));
+		CF_DEBUG("final shutdown for %s\n", device_get_nameunit(cf_dev));
 		free(sc->levels_buf, M_DEVBUF);
 	}
 
@@ -238,7 +238,7 @@ cpufreq_detach(device_t dev)
 }
 
 static int
-cf_set_method(device_t dev, const struct cf_level *level, int priority)
+cf_set_method(device_t cf_dev, const struct cf_level *level, int priority)
 {
 	struct cpufreq_softc *sc;
 	const struct cf_setting *set;
@@ -247,7 +247,7 @@ cf_set_method(device_t dev, const struct cf_level *level, int priority)
 	int error, i;
 	u_char pri;
 
-	sc = device_get_softc(dev);
+	sc = device_get_softc(cf_dev);
 	error = 0;
 	set = NULL;
 	saved_freq = NULL;
@@ -273,7 +273,8 @@ cf_set_method(device_t dev, const struct cf_level *level, int priority)
 	 * handle having different CPUs at different frequencies.  
 	 */
 	if (mp_ncpus > 1 && !smp_started) {
-		device_printf(dev, "rejecting change, SMP not started yet\n");
+		device_printf(cf_dev,
+		    	      "rejecting change, SMP not started yet\n");
 		error = ENXIO;
 		goto out;
 	}
@@ -422,11 +423,11 @@ out:
 }
 
 static int
-__get_frequency(device_t dev)
+__get_frequency(device_t cf_drv_dev)
 {
 	struct cf_setting set;
 
-	if (CPUFREQ_DRV_GET(dev, &set) != 0)
+	if (CPUFREQ_DRV_GET(cf_drv_dev, &set) != 0)
 		return -1;
 
 	return set.freq;
@@ -434,14 +435,14 @@ __get_frequency(device_t dev)
 
 /* Returns the index into *levels with the match */
 static int
-__get_level(device_t dev, struct cf_level *levels, int count)
+__get_level(device_t cf_drv_dev, struct cf_level *levels, int count)
 {
 	struct cf_setting set;
 	int i;
 
-	if (!device_is_attached(dev))
+	if (!device_is_attached(cf_drv_dev))
 		return -(ENXIO);
-	if (__get_frequency(dev) < 0)
+	if (__get_frequency(cf_drv_dev) < 0)
 		return -(ENODEV);
 	for (i = 0; i < count; i++)
 		if (set.freq == levels[i].total_set.freq)
@@ -451,7 +452,7 @@ __get_level(device_t dev, struct cf_level *levels, int count)
 }
 
 static int
-cf_get_method(device_t dev, struct cf_level *level)
+cf_get_method(device_t cf_dev, struct cf_level *level)
 {
 	struct cpufreq_softc *sc;
 	struct cf_level *levels;
@@ -461,7 +462,7 @@ cf_get_method(device_t dev, struct cf_level *level)
 	int bdiff, count, diff, error, i, n, numdevs;
 	uint64_t rate;
 
-	sc = device_get_softc(dev);
+	sc = device_get_softc(cf_dev);
 	error = 0;
 	levels = NULL;
 
@@ -483,14 +484,14 @@ cf_get_method(device_t dev, struct cf_level *level)
 	levels = malloc(count * sizeof(*levels), M_TEMP, M_NOWAIT);
 	if (levels == NULL)
 		return (ENOMEM);
-	error = CPUFREQ_LEVELS(dev, levels, &count);
+	error = CPUFREQ_LEVELS(cf_dev, levels, &count);
 	if (error) {
 		if (error == E2BIG)
 			printf("cpufreq: need to increase CF_MAX_LEVELS\n");
 		free(levels, M_TEMP);
 		return (error);
 	}
-	error = device_get_children(device_get_parent(dev), &devs, &numdevs);
+	error = device_get_children(device_get_parent(cf_dev), &devs, &numdevs);
 	if (error) {
 		free(levels, M_TEMP);
 		return (error);
@@ -522,7 +523,7 @@ cf_get_method(device_t dev, struct cf_level *level)
 	 * We couldn't find an exact match, so attempt to estimate and then
 	 * match against a level.
 	 */
-	pc = cpu_get_pcpu(dev);
+	pc = cpu_get_pcpu(cf_dev);
 	if (pc == NULL) {
 		error = ENXIO;
 		goto out;
@@ -551,31 +552,31 @@ out:
 
 /* NB: The code currently may have a softc that isn't dev's softc */
 static int
-__add_levels(device_t dev, struct cpufreq_softc *sc, struct cf_setting_lst *rel_sets)
+__add_levels(device_t cf_dev, struct cpufreq_softc *sc, struct cf_setting_lst *rel_sets)
 {
 	struct cf_setting_array *set_arr;
 	static struct cf_setting sets[MAX_SETTINGS];
 	int type, set_count, error;
 
 	/* Skip devices that aren't ready. */
-	if (!device_is_attached(dev))
+	if (!device_is_attached(cf_dev))
 		return (0);
 
 	/*
 	 * Get settings, skipping drivers that offer no settings or
 	 * provide settings for informational purposes only.
 	 */
-	error = CPUFREQ_DRV_TYPE(dev, &type);
+	error = CPUFREQ_DRV_TYPE(cf_dev, &type);
 	if (error || (type & CPUFREQ_FLAG_INFO_ONLY)) {
 		if (error == 0) {
 			CF_DEBUG("skipping info-only driver %s\n",
-			    device_get_nameunit(dev));
+			    device_get_nameunit(cf_dev));
 		}
 		goto out;
 	}
 
 	set_count = MAX_SETTINGS;
-	error = CPUFREQ_DRV_SETTINGS(dev, sets, &set_count);
+	error = CPUFREQ_DRV_SETTINGS(cf_dev, sets, &set_count);
 	if (error || set_count == 0)
 		goto out;
 
@@ -604,7 +605,7 @@ out:
 }
 
 static int
-cf_levels_method(device_t dev, struct cf_level *levels, int *count)
+cf_levels_method(device_t cf_dev, struct cf_level *levels, int *count)
 {
 	struct cf_setting_array *set_arr;
 	struct cf_setting_lst rel_sets;
@@ -619,8 +620,8 @@ cf_levels_method(device_t dev, struct cf_level *levels, int *count)
 		return (EINVAL);
 
 	TAILQ_INIT(&rel_sets);
-	sc = device_get_softc(dev);
-	error = device_get_children(device_get_parent(dev), &devs, &numdevs);
+	sc = device_get_softc(cf_dev);
+	error = device_get_children(device_get_parent(cf_dev), &devs, &numdevs);
 	if (error)
 		return (error);
 
@@ -639,14 +640,14 @@ cf_levels_method(device_t dev, struct cf_level *levels, int *count)
 	if (TAILQ_EMPTY(&sc->all_levels)) {
 		struct cf_setting set;
 		if (sc->max_mhz == CPUFREQ_VAL_UNKNOWN) {
-			sc->max_mhz = cpu_get_nominal_mhz(dev);
+			sc->max_mhz = cpu_get_nominal_mhz(cf_dev);
 			/*
 			 * If the CPU can't report a rate for 100%, hope
 			 * the CPU is running at its nominal rate right now,
 			 * and use that instead.
 			 */
 			if (sc->max_mhz <= 0) {
-				pc = cpu_get_pcpu(dev);
+				pc = cpu_get_pcpu(cf_dev);
 				cpu_est_clockrate(pc->pc_cpuid, &rate);
 				sc->max_mhz = rate / 1000000;
 			}
@@ -924,7 +925,7 @@ cpufreq_curr_sysctl(SYSCTL_HANDLER_ARGS)
 	sc = oidp->oid_arg1;
 	levels = sc->levels_buf;
 
-	error = CPUFREQ_GET(sc->dev, &levels[0]);
+	error = CPUFREQ_GET(sc->cf_dev, &levels[0]);
 	if (error)
 		goto out;
 	freq = levels[0].total_set.freq;
@@ -986,7 +987,7 @@ cpufreq_levels_sysctl(SYSCTL_HANDLER_ARGS)
 		sbuf_delete(&sb);
 		return (ENOMEM);
 	}
-	error = CPUFREQ_LEVELS(sc->dev, levels, &count);
+	error = CPUFREQ_LEVELS(sc->cf_dev, levels, &count);
 	if (error) {
 		if (error == E2BIG)
 			printf("cpufreq: need to increase CF_MAX_LEVELS\n");
@@ -1011,12 +1012,12 @@ out:
 static int
 cpufreq_settings_sysctl(SYSCTL_HANDLER_ARGS)
 {
-	device_t dev;
+	device_t cf_drv_dev;
 	struct cf_setting *sets;
 	struct sbuf sb;
 	int error, i, set_count;
 
-	dev = oidp->oid_arg1;
+	cf_drv_dev = oidp->oid_arg1;
 	sbuf_new(&sb, NULL, 128, SBUF_AUTOEXTEND);
 
 	/* Get settings from the device and generate the output string. */
@@ -1026,7 +1027,7 @@ cpufreq_settings_sysctl(SYSCTL_HANDLER_ARGS)
 		sbuf_delete(&sb);
 		return (ENOMEM);
 	}
-	error = CPUFREQ_DRV_SETTINGS(dev, sets, &set_count);
+	error = CPUFREQ_DRV_SETTINGS(cf_drv_dev, sets, &set_count);
 	if (error)
 		goto out;
 	if (set_count) {
@@ -1058,23 +1059,23 @@ cpufreq_add_freq_driver_sysctl(device_t cf_dev, device_t cf_drv_dev)
 }
 
 int
-cpufreq_register(device_t dev)
+cpufreq_register(device_t cf_drv_dev)
 {
 	struct cpufreq_softc *sc;
 	device_t cf_dev, cpu_dev;
 	int error;
 
 	/* Add a sysctl to get each driver's settings separately. */
-	SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),
-	    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)),
-	    OID_AUTO, "freq_settings", CTLTYPE_STRING | CTLFLAG_RD, dev, 0,
+	SYSCTL_ADD_PROC(device_get_sysctl_ctx(cf_drv_dev),
+	    SYSCTL_CHILDREN(device_get_sysctl_tree(cf_drv_dev)),
+	    OID_AUTO, "freq_settings", CTLTYPE_STRING | CTLFLAG_RD, cf_drv_dev, 0,
 	    cpufreq_settings_sysctl, "A", "CPU frequency driver settings");
 
 	/*
 	 * Add only one cpufreq device to each CPU.  Currently, all CPUs
 	 * must offer the same levels and be switched at the same time.
 	 */
-	cpu_dev = device_get_parent(dev);
+	cpu_dev = device_get_parent(cf_drv_dev);
 	if ((cf_dev = device_find_child(cpu_dev, "cpufreq", -1))) {
 		sc = device_get_softc(cf_dev);
 		sc->max_mhz = CPUFREQ_VAL_UNKNOWN;
@@ -1094,7 +1095,7 @@ cpufreq_register(device_t dev)
 }
 
 int
-cpufreq_unregister(device_t dev)
+cpufreq_unregister(device_t cf_drv_dev)
 {
 	device_t cf_dev, *devs;
 	int cfcount, devcount, error, i, type;
@@ -1104,12 +1105,12 @@ cpufreq_unregister(device_t dev)
 	 * device as well.  We identify cpufreq children by calling a method
 	 * they support.
 	 */
-	error = device_get_children(device_get_parent(dev), &devs, &devcount);
+	error = device_get_children(device_get_parent(cf_drv_dev), &devs, &devcount);
 	if (error)
 		return (error);
-	cf_dev = device_find_child(device_get_parent(dev), "cpufreq", -1);
+	cf_dev = device_find_child(device_get_parent(cf_drv_dev), "cpufreq", -1);
 	if (cf_dev == NULL) {
-		device_printf(dev,
+		device_printf(cf_drv_dev,
 	"warning: cpufreq_unregister called with no cpufreq device active\n");
 		free(devs, M_TEMP);
 		return (0);
@@ -1129,10 +1130,10 @@ cpufreq_unregister(device_t dev)
 }
 
 int
-cpufreq_settings_changed(device_t dev)
+cpufreq_settings_changed(device_t cf_dev)
 {
 
 	EVENTHANDLER_INVOKE(cpufreq_levels_changed,
-	    device_get_unit(device_get_parent(dev)));
+	    device_get_unit(device_get_parent(cf_dev)));
 	return (0);
 }
