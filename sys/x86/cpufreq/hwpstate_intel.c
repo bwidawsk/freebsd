@@ -269,8 +269,7 @@ intel_hwpstate_identify(driver_t *driver, device_t parent)
 		return;
 	}
 
-	/* Only allow this to continue if a user explicitly disabled est */
-	if (!resource_disabled("est", 0)) {
+	if (resource_disabled("hwpstate_intel", 0)) {
 		intel_speed_shift = false;
 		return;
 	}
